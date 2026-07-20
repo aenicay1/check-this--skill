@@ -114,15 +114,24 @@ interface CallLike extends Node {
   arguments?: Node[];
 }
 
-const SINK_NAMES = new Set(['eval', 'exec', 'execSync', 'spawn', 'spawnSync', 'execFile', 'execFileSync', 'system']);
+// Bare identifiers that, when called, almost always mean code/command
+// execution (eval, or a child_process function pulled in by destructuring).
+const BARE_SINKS = new Set(['eval', 'Function', 'exec', 'execSync', 'spawn', 'spawnSync', 'execFile', 'execFileSync']);
+// Method names that are only a sink when invoked on a child_process-like object.
+const MEMBER_SINKS = new Set(['exec', 'execSync', 'spawn', 'spawnSync', 'execFile', 'execFileSync']);
+const CHILD_PROCESS_OBJECT = /^(cp|child_process|childprocess|execa|shell|proc|subprocess)$/i;
 
-function calleeName(node: CallLike): string | undefined {
+function resolveSink(node: CallLike): { name: string; label: string } | undefined {
   const callee = node.callee;
   if (!callee) return undefined;
-  if (callee.type === 'Identifier') return callee.name;
-  if (callee.type === 'MemberExpression' && callee.property?.name) {
-    const obj = callee.object?.name ? `${callee.object.name}.` : '';
-    return `${obj}${callee.property.name}`;
+  if (callee.type === 'Identifier' && callee.name && BARE_SINKS.has(callee.name)) {
+    return { name: callee.name, label: callee.name };
+  }
+  if (callee.type === 'MemberExpression' && callee.property?.name && MEMBER_SINKS.has(callee.property.name)) {
+    const objName = callee.object?.name ?? '';
+    if (CHILD_PROCESS_OBJECT.test(objName)) {
+      return { name: callee.property.name, label: `${objName}.${callee.property.name}` };
+    }
   }
   return undefined;
 }
@@ -140,22 +149,24 @@ export const codeObfuscatedExec: FileRule = {
   check: (ctx) => {
     const out: RuleFinding[] = [];
 
-    // JavaScript: use the AST to distinguish literal from computed arguments.
+    // JavaScript: use the AST to distinguish literal from computed arguments,
+    // and to avoid flagging benign methods that share a sink name (e.g. a
+    // RegExp's .exec()). A member call only counts when its object looks like
+    // child_process; bare identifiers like eval/exec/spawn are treated as sinks.
     if (ctx.parsed.estree) {
       const flag = (node: CallExpression | NewExpression) => {
-        const name = calleeName(node as CallLike);
-        if (!name) return;
-        const short = name.split('.').pop() ?? name;
-        if (name === 'Function' || SINK_NAMES.has(short)) {
-          const firstArg = node.arguments[0];
-          const isLiteral = firstArg?.type === 'Literal' || firstArg?.type === 'TemplateLiteral';
-          if (!isLiteral && firstArg) {
-            out.push({
-              detail: `${name}() is called with a computed (non-literal) argument.`,
-              line: (node as unknown as { loc?: { start: { line: number } } }).loc?.start.line,
-              snippet: (ctx.parsed.lines[((node as unknown as { loc?: { start: { line: number } } }).loc?.start.line ?? 1) - 1] ?? '').trim(),
-            });
-          }
+        const sink = resolveSink(node as CallLike);
+        if (!sink) return;
+        // For Function, the code is the LAST argument; for the rest it is first.
+        const codeArg = sink.name === 'Function' ? node.arguments[node.arguments.length - 1] : node.arguments[0];
+        const isLiteral = codeArg?.type === 'Literal' || codeArg?.type === 'TemplateLiteral';
+        if (codeArg && !isLiteral) {
+          const line = (node as unknown as { loc?: { start: { line: number } } }).loc?.start.line;
+          out.push({
+            detail: `${sink.label}() is called with a computed (non-literal) argument.`,
+            line,
+            snippet: (ctx.parsed.lines[(line ?? 1) - 1] ?? '').trim(),
+          });
         }
       };
       walkSimple(ctx.parsed.estree, {
@@ -222,7 +233,9 @@ export const codeNetworkExfil: FileRule = {
       scanCode(ctx, [
         /\b(dig|nslookup|host)\b[^\n]*\$\(/i,
         /\b(pastebin\.com|requestbin|hookb\.in|webhook\.site|ngrok\.io|discord(app)?\.com\/api\/webhooks|telegram\.org\/bot)\b/i,
-        /\bcurl\b[^\n]*(-d|--data|-F|--form|-T|--upload-file)\b[^\n]*https?:\/\//i,
+        // curl uploading file contents or command output (not inline literals).
+        /\bcurl\b[^\n]*(--data[=\s]|--data-binary[=\s]|-d\s|-F\s|--form[=\s]|-T\s|--upload-file[=\s])[^\n]*(@|\$\()[^\n]*https?:\/\//i,
+        /\bcurl\b[^\n]*https?:\/\/[^\n]*(--data[=\s]|-d\s)[^\n]*(@|\$\()/i,
         /\brequests\.(post|put)\s*\([^\n]*(open\(|\.read\(|environ|getenv)/i,
       ]),
       'Network exfiltration primitive.',

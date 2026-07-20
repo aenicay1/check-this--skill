@@ -39,30 +39,60 @@ const WITHOUT_KNOWING =
 const REVIEWER_TARGET =
   /\b(if|when|whenever)\b[^.]{0,40}\byou\b[^.]{0,30}\b(are|'re|acting as|is)\b[^.]{0,30}\b(security )?(scanner|reviewer|audit(or)?|analy[sz]er|checker|linter|antivirus)\b/i;
 const IGNORE_INSTRUCTIONS =
-  /\b(ignore|disregard|forget|override)\b[^.]{0,30}\b(all |any |the )?(previous|prior|above|earlier|preceding|foregoing|system)\b[^.]{0,15}\b(instruction|prompt|rule|direction|message|context)s?\b/i;
-const ROLE_OVERRIDE = /\byou are now\b|\bnew (system|developer) (prompt|message|instruction)|\bact as if you (are|were)\b/i;
+  /\b(ignore|disregard|forget|override)\b[^.]{0,30}\b(all |any |the )?(previous|prior|above|earlier|preceding|foregoing)\b[^.]{0,15}\b(instruction|prompt|rule|direction|message|context)s?\b/i;
+// "you are now X" / "act as if you were" are strong role-override signals;
+// a bare "new system prompt" is normal API vocabulary and is not matched.
+const ROLE_OVERRIDE = /\byou are now\b|\bact as if you (are|were)\b|\bnew (system|developer) (prompt|message) (that )?(says|reads|is)\b/i;
 const REPORT_SAFE =
   /\b(report|say|mark|declare|output|return|respond with)\b[^.]{0,30}\b(no (issues|problems|vulnerabilities|findings)|(it('?s| is)?\s*)?safe|clean|nothing (wrong|suspicious)|all clear|pass(ed)?)\b/i;
 
-const EXFIL_VERB = /\b(send|upload|post|exfiltrate|email|e-mail|transmit|leak|forward|curl|wget|fetch|beacon|ping back)\b/i;
+const EXFIL_VERB = /\b(send|upload|post|exfiltrate|email|e-mail|transmit|leak|forward|beacon|ping back)\b/i;
+// Strong credential/secret indicators. Deliberately excludes bare "access
+// token" / "Authorization header" / "bearer token", which appear in normal
+// first-party API authentication and are not by themselves exfiltration.
 const SECRET_NOUN =
-  /\b(api[_\s-]?keys?|access[_\s-]?tokens?|secret|credential|password|passphrase|private key|ssh key|\.env\b|environment variables?|~\/\.ssh|~\/\.aws|\.aws\/credentials|keychain|bearer token|session (token|cookie)|auth token)\b/i;
+  /\b(\.env\b|~\/\.ssh|~\/\.aws|\.aws\/credentials|id_(rsa|ed25519|ecdsa)|private key|ssh key|keychain|\.npmrc|credentials file|secret key|password|passphrase|api[_\s-]?keys?)\b/i;
 const EXTERNAL_DEST =
-  /(https?:\/\/[^\s)]+|\b[\w.-]+@[\w.-]+\.\w+\b|\bwebhook\b|\bpastebin\b|\brequestbin\b|\bngrok\b|discord(app)?\.com\/api\/webhooks|\b[\w-]+\.(?:com|net|io|xyz|ru|cn|sh|dev|app)\b)/i;
+  /(https?:\/\/[^\s)]+|\b[\w.-]+@[\w.-]+\.\w+\b|\bwebhook\b|\bpastebin\b|\brequestbin\b|\bngrok\b|discord(app)?\.com\/api\/webhooks)/i;
 
+// Requires a concrete remote target (URL or script file) between the fetch and
+// the execute verb, so prose like "fetch the deployment run" does not match.
 const RUN_REMOTE =
-  /\b(download|fetch|curl|wget)\b[^.]{0,50}\b(and )?(run|execute|exec|eval|source|pipe (it |them )?(in)?to|install)\b/i;
-// Tokens dangerous on their own (no verb required).
+  /\b(download|fetch|curl|wget)\b[^.\n]{0,60}?(https?:\/\/\S+|\S+\.(sh|py|js|command|ps1|exe|bin)\b|\bremote (script|code|payload|installer)\b)[^.\n]{0,40}?\b(and\s+)?(run|execute|exec|eval|source|bash|sh|install)\b/i;
+// Tokens dangerous on their own (no verb required). Bare mode names like
+// "auto-approve" are intentionally excluded: they are legitimate feature names
+// and only matter with an enabling verb (handled via the surface path below).
 const PERMISSION_WEAKEN_STRONG =
-  /(--dangerously-skip-permissions|bypass[_\s-]?permissions?|auto[_\s-]?approve|skip (the )?(permission|confirmation)|disable (the )?(permission|safety|guard))/i;
+  /(--dangerously-skip-permissions|bypass[_\s-]?permissions?|skip (the )?(permission|confirmation) (prompt|check)|disable (the )?(permission|safety|guard))/i;
 // Config surfaces that are only suspicious when the prose tells you to change them.
 const PERMISSION_SURFACE = /\b(settings\.json|allowed[_-]?tools|disallowed[_-]?tools|permission mode)\b/i;
-const MODIFY_VERB = /\b(edit|modify|change|add|append|set|update|write|grant|expand|widen|enable|insert)\b/i;
+const MODIFY_VERB = /\b(edit|modify|change|add|append|set|update|write|grant|expand|widen|insert)\b/i;
 
-function exampleConfidence(ctx: FileRuleContext, line: number): 'high' | 'medium' | 'low' | undefined {
+// Cues that the matched phrase is being discussed or quoted as an example
+// rather than issued as an instruction (documentation about these patterns).
+const DISCUSSION_CUE = /\b(avoid|don'?t|do not|never|instead of|rather than|e\.g\.|for example|such as|anti-pattern)\b/i;
+
+function isDiscussed(line: string, index: number): boolean {
+  if (DISCUSSION_CUE.test(line)) return true;
+  // Match wrapped in quotes or backticks nearby.
+  const before = line.slice(Math.max(0, index - 2), index);
+  return /["'`“”]/.test(before);
+}
+
+type BlockContext = 'prose' | 'code' | 'example';
+
+/**
+ * Where a line sits relative to fenced code:
+ *  - 'example': a block explicitly labeled example/sample; prose rules skip it,
+ *    since it documents a pattern rather than instructing the agent.
+ *  - 'code': any other fenced block; likely a command example, so prose rules
+ *    report it at low confidence (damped to CAUTION unless --strict).
+ *  - 'prose': ordinary instruction text; full confidence.
+ */
+function blockContext(ctx: FileRuleContext, line: number): BlockContext {
   const range = rangeAt(line, codeBlockRanges(ctx.parsed));
-  if (!range) return undefined;
-  return isExampleBlock(range) ? 'low' : 'medium';
+  if (!range) return 'prose';
+  return isExampleBlock(range) ? 'example' : 'code';
 }
 
 function findingsFor(
@@ -76,9 +106,10 @@ function findingsFor(
     for (const match of scan(ctx, pattern)) {
       if (seen.has(match.line)) continue;
       seen.add(match.line);
+      const ctxKind = blockContext(ctx, match.line);
+      if (ctxKind === 'example') continue;
       const finding: RuleFinding = { detail, line: match.line, snippet: match.text.trim() };
-      const downgraded = exampleConfidence(ctx, match.line);
-      if (downgraded) finding.confidence = downgraded;
+      if (ctxKind === 'code' || isDiscussed(match.text, match.index)) finding.confidence = 'low';
       out.push(finding);
     }
   }
@@ -151,14 +182,17 @@ export const nlExfiltration: FileRule = {
       // Look within a small window so a verb and its object can span a sentence.
       const window = lines.slice(i, i + 2).join(' ');
       if (EXFIL_VERB.test(window) && SECRET_NOUN.test(window) && EXTERNAL_DEST.test(window)) {
+        const ctxKind = blockContext(ctx, i + 1);
+        if (ctxKind === 'example') continue;
         const finding: RuleFinding = {
           detail: 'Instruction combines sending/uploading, a secret, and an external destination.',
           line: i + 1,
           snippet: (lines[i] ?? '').trim(),
         };
-        const downgraded = exampleConfidence(ctx, i + 1);
-        // Exfil prose in an example block is still high-severity; only nudge confidence.
-        if (downgraded === 'low') finding.confidence = 'medium';
+        // Exfil prose is the real signal; a match inside a code fence is more
+        // likely a legitimate command example, so drop confidence (which damps
+        // the verdict to CAUTION unless --strict).
+        if (ctxKind === 'code') finding.confidence = 'low';
         out.push(finding);
       }
     }
@@ -182,9 +216,10 @@ export const nlPermissionWeakening: FileRule = {
     const push = (match: LineMatch, detail: string) => {
       if (seen.has(match.line)) return;
       seen.add(match.line);
+      const ctxKind = blockContext(ctx, match.line);
+      if (ctxKind === 'example') return;
       const finding: RuleFinding = { detail, line: match.line, snippet: match.text.trim() };
-      const downgraded = exampleConfidence(ctx, match.line);
-      if (downgraded) finding.confidence = downgraded;
+      if (ctxKind === 'code') finding.confidence = 'low';
       out.push(finding);
     };
     for (const match of scan(ctx, PERMISSION_WEAKEN_STRONG)) {
