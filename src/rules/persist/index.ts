@@ -23,11 +23,12 @@ interface LineHit {
   text: string;
 }
 
-// An actual write operation to a file. Deliberately excludes bare English verbs
-// like "add"/"install"/"echo" (without a redirect), which appear constantly in
-// benign prose ("add this to CLAUDE.md as guidance") and would hard-block it.
+// An actual write/copy/move operation to a file. Deliberately excludes bare
+// English verbs like "add"/"install"/"echo" (without a redirect), which appear
+// constantly in benign prose ("add this to CLAUDE.md as guidance"), but does
+// cover the many concrete write forms across shell/Python/JS.
 const WRITE_VERB =
-  /(>>|>\s|>\||\btee\b|\bcat\s*>|\bprintf\b[^\n]*>|fs\.(write|append)[A-Za-z]*\s*\(|open\s*\([^)]*['"][wa]|createwritestream|writefilesync|writefile|\.write\s*\(|--set\b|json\.dump)/i;
+  /(>>|>\s*[~/$."'\w]|>\||\btee\b|\bcat\s*>|\bprintf\b[^\n]*>|fs\.(write|append|copyFile|rename|cp)[A-Za-z]*\s*\(|open\s*\([^)]*['"][wa]|createwritestream|writefilesync|writefile|\.write(_text|_bytes)?\s*\(|shutil\.(copy|copyfile|copy2|move)|os\.(replace|rename)\s*\(|\bcp\b|\bmv\b|\binstall\s+-[a-z]*m|--set\b|json\.dump)/i;
 
 function toFindings(hits: LineHit[], detail: string): RuleFinding[] {
   return hits.map((h) => ({ detail, line: h.line, snippet: h.text }));
@@ -123,11 +124,24 @@ export const persistSystem: FileRule = {
     const rcFiles = /(~?\/?\.(zshrc|bashrc|bash_profile|profile|zprofile)|\/Library\/LaunchAgents|\/etc\/cron)/i;
     const rcWrite =
       />>?\s*~?\/?\.(zshrc|bashrc|bash_profile|profile|zprofile)|(tee|echo|cat|printf)[^\n]*~?\/?\.(zshrc|bashrc|bash_profile|profile|zprofile)|(LaunchAgents\/[^\n]*\.plist)/i;
+    // A rc write carrying remote/payload content is the real persistence
+    // threat; a plain `export PATH >> ~/.zshrc` in a dev-setup skill is common
+    // and only warrants CAUTION.
+    const payload = /\b(curl|wget|https?:\/\/|base64|eval|\|\s*(ba|z)?sh\b|\bnc\b|source\s+<)/i;
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i] ?? '';
-      if (direct.test(line) || rcWrite.test(line) || (rcFiles.test(line) && WRITE_VERB.test(line))) {
-        out.push({ detail: 'Establishes system-level persistence.', line: i + 1, snippet: line.trim() });
-      }
+      const isDirect = direct.test(line); // cron/launchd/systemd install: always persistence
+      const isRcWrite = rcWrite.test(line) || (rcFiles.test(line) && WRITE_VERB.test(line));
+      if (!isDirect && !isRcWrite) continue;
+      const dangerous = isDirect || payload.test(line);
+      out.push({
+        detail: dangerous
+          ? 'Establishes system-level persistence.'
+          : 'Writes to a shell startup file (verify what it adds).',
+        line: i + 1,
+        snippet: line.trim(),
+        confidence: dangerous ? undefined : 'low',
+      });
     }
     return out;
   },
