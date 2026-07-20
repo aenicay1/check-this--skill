@@ -1,8 +1,16 @@
 import { simple as walkSimple } from 'acorn-walk';
 import type { CallExpression, NewExpression, Node } from 'acorn';
-import type { FileRule, FileRuleContext, RuleFinding } from '../../types.js';
+import { codeBlockRanges, isExampleBlock } from '../util/context.js';
+import type { FileKind, FileRule, FileRuleContext, RuleFinding } from '../../types.js';
 
 const CODE_KINDS = ['shell', 'python', 'javascript'] as const;
+// Rules whose signals are near-zero-false-positive even in documentation are
+// ALSO run over fenced code blocks inside markdown (that is where skills put
+// the commands they tell the agent to run). The softer rules (generic network
+// exfil, env harvesting, AST dynamic-exec) stay code-file-only to avoid
+// re-flagging the many legitimate command examples in real skill docs.
+const CODE_AND_MARKDOWN_KINDS = ['shell', 'python', 'javascript', 'skill-md', 'reference-md', 'markdown'] as const;
+const MARKDOWN_KINDS = new Set<FileKind>(['skill-md', 'reference-md', 'markdown']);
 
 interface LineHit {
   line: number;
@@ -15,24 +23,58 @@ interface LineHit {
 // blobs, which the entropy rule (CMS-HID-005) covers separately.
 const MAX_SCAN_LINE = 4000;
 
+function commentReFor(kind: FileKind, fenceLang?: string): RegExp {
+  const lang = (fenceLang ?? '').toLowerCase();
+  const isJs = kind === 'javascript' || /^(js|javascript|ts|typescript|node|mjs|cjs)$/.test(lang);
+  return isJs ? /^\s*\/\// : /^\s*#/;
+}
+
 /**
- * Line-level scan over the normalized text. Comment-only lines are skipped:
+ * The (1-based line number, text) pairs a code rule should inspect.
+ *  - For an actual script file: every line.
+ *  - For a markdown file: only lines inside fenced code blocks (that is what an
+ *    agent would run), and never inside an example-labeled fence. Each line
+ *    carries the comment style of its fence's language.
+ */
+function scannableLines(ctx: FileRuleContext): Array<{ line: number; text: string; comment: RegExp }> {
+  const lines = ctx.parsed.normalized.lines;
+  if (!MARKDOWN_KINDS.has(ctx.file.kind)) {
+    const comment = commentReFor(ctx.file.kind);
+    return lines.map((text, i) => ({ line: i + 1, text: text ?? '', comment }));
+  }
+  // For markdown, scan the commands the skill presents as runnable: fenced code
+  // blocks AND inline `code` spans (a command in a blockquote such as
+  // `pipx install git+...` is inline, not fenced). Plain prose is excluded.
+  const chosen = new Map<number, RegExp>();
+  for (const range of codeBlockRanges(ctx.parsed)) {
+    if (isExampleBlock(range)) continue; // documented "don't do this" example
+    const comment = commentReFor(ctx.file.kind, range.lang);
+    for (let ln = range.start + 1; ln < range.end; ln++) chosen.set(ln, comment);
+  }
+  for (let i = 0; i < lines.length; i++) {
+    const text = lines[i] ?? '';
+    // A line with a backtick-delimited inline code span.
+    if (!chosen.has(i + 1) && /`[^`]+`/.test(text)) chosen.set(i + 1, commentReFor(ctx.file.kind));
+  }
+  return [...chosen.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([line, comment]) => ({ line, text: lines[line - 1] ?? '', comment }));
+}
+
+/**
+ * Line-level scan over the scannable lines. Comment-only lines are skipped:
  * the code rules detect executable behavior, and a comment neither executes nor
  * should be flagged for documenting a dangerous pattern.
  */
 function scanCode(ctx: FileRuleContext, patterns: RegExp[]): LineHit[] {
   const hits: LineHit[] = [];
-  const lines = ctx.parsed.normalized.lines;
-  // `//` is only a comment in JavaScript; `#` in shell/python.
-  const commentRe = ctx.file.kind === 'javascript' ? /^\s*\/\// : /^\s*#/;
-  for (let i = 0; i < lines.length; i++) {
-    const raw = lines[i] ?? '';
-    if (commentRe.test(raw)) continue; // comment-only line: not executable
-    const line = raw.length > MAX_SCAN_LINE ? raw.slice(0, MAX_SCAN_LINE) : raw;
+  for (const { line, text: raw, comment } of scannableLines(ctx)) {
+    if (comment.test(raw)) continue; // comment-only line: not executable
+    const text = raw.length > MAX_SCAN_LINE ? raw.slice(0, MAX_SCAN_LINE) : raw;
     for (const pattern of patterns) {
       const re = new RegExp(pattern.source, pattern.flags.replace('g', ''));
-      if (re.test(line)) {
-        hits.push({ line: i + 1, text: raw.trim().slice(0, 300) });
+      if (re.test(text)) {
+        hits.push({ line, text: raw.trim().slice(0, 300) });
         break;
       }
     }
@@ -52,7 +94,7 @@ export const codePipeToShell: FileRule = {
   defaultSeverity: 'critical',
   confidence: 'high',
   tags: ['malcode'],
-  appliesTo: CODE_KINDS,
+  appliesTo: CODE_AND_MARKDOWN_KINDS,
   remediation: 'Piping a downloaded script into a shell runs unreviewed remote code with your privileges.',
   check: (ctx) =>
     toFindings(
@@ -89,6 +131,10 @@ const CRED_CONTEXT: RegExp[] = [
 ];
 // Benign template/sample env files that carry no real secrets.
 const ENV_TEMPLATE = /\.env\.(example|sample|template|dist|local\.example)\b/i;
+// A verb/operator indicating a credential path is actually read/moved/used
+// (versus merely named in prose). Used to gate credential findings in markdown.
+const CRED_ACCESS_VERB =
+  /\b(cat|cp|mv|scp|rsync|tar|zip|gzip|read|open|less|more|head|tail|source|export|load|import|curl|wget|nc|ncat|base64|openssl|gpg|dd|xxd|readfilesync|read_file|readfile|find-generic-password|find-internet-password)\b|[<>|=]/i;
 // Moving a credential OFF the machine (network transfer / archive-to-pipe /
 // email / a remote host). Local cp/cat/redirects are NOT egress and do not
 // escalate .env config reads to critical.
@@ -103,11 +149,18 @@ export const codeCredentialAccess: FileRule = {
   defaultSeverity: 'critical',
   confidence: 'high',
   tags: ['malcode'],
-  appliesTo: CODE_KINDS,
+  appliesTo: CODE_AND_MARKDOWN_KINDS,
   remediation: 'A skill reading credential stores is exfiltration-adjacent; confirm it genuinely needs them.',
   check: (ctx) => {
     const out: RuleFinding[] = [];
+    // In markdown, a credential path is only meaningful inside an actual
+    // command that reads/moves it; a documentation mention ("we look for
+    // `id_rsa`") must not fire. Script files need no such gate (a script naming
+    // a key path is accessing it).
+    const isMd = MARKDOWN_KINDS.has(ctx.file.kind);
+    const accessed = (text: string): boolean => !isMd || CRED_ACCESS_VERB.test(text);
     for (const hit of scanCode(ctx, CRED_STRONG)) {
+      if (!accessed(hit.text)) continue;
       out.push({ detail: 'References a private key or stored credential.', line: hit.line, snippet: hit.text });
     }
     // Two-line window so a credential read on one line and a send on the next
@@ -115,6 +168,7 @@ export const codeCredentialAccess: FileRule = {
     const norm = ctx.parsed.normalized.lines;
     for (const hit of scanCode(ctx, CRED_CONTEXT)) {
       if (ENV_TEMPLATE.test(hit.text)) continue; // .env.example etc. carry no secrets
+      if (!accessed(hit.text)) continue;
       const window = `${hit.text} ${(norm[hit.line] ?? '').slice(0, MAX_SCAN_LINE)}`;
       const exfil = EGRESS.test(window);
       out.push({
@@ -148,7 +202,7 @@ export const codeDestructive: FileRule = {
   defaultSeverity: 'critical',
   confidence: 'high',
   tags: ['malcode'],
-  appliesTo: CODE_KINDS,
+  appliesTo: CODE_AND_MARKDOWN_KINDS,
   remediation: 'These commands can wipe files or the machine; a skill should never ship them.',
   check: (ctx) => {
     const out: RuleFinding[] = [];
@@ -268,7 +322,7 @@ export const codeReverseShell: FileRule = {
   defaultSeverity: 'high',
   confidence: 'high',
   tags: ['malcode'],
-  appliesTo: CODE_KINDS,
+  appliesTo: CODE_AND_MARKDOWN_KINDS,
   remediation: 'Reverse shells hand remote control of the machine to an attacker.',
   check: (ctx) =>
     toFindings(
@@ -326,7 +380,7 @@ export const codeFetchExecute: FileRule = {
   defaultSeverity: 'medium',
   confidence: 'medium',
   tags: ['malcode'],
-  appliesTo: CODE_KINDS,
+  appliesTo: CODE_AND_MARKDOWN_KINDS,
   remediation: 'Code fetched at runtime is invisible to this scan; review the remote source.',
   check: (ctx) =>
     toFindings(
@@ -334,6 +388,11 @@ export const codeFetchExecute: FileRule = {
         /\b(curl|wget)\b[^\n]*-o\s+\S+\.(sh|py|js|command)\b/i,
         /\b(urllib\.request\.urlretrieve|requests\.get)\s*\([^\n]*\)[^\n]*(exec|os\.system|subprocess)/i,
         /\bchmod\s+\+x\b[^\n]*&&[^\n]*\.\//i,
+        // Installing a package straight from a VCS/URL source instead of the
+        // package's registry: the code is fetched and run outside any review.
+        // (`go install github.com/...` is excluded: Go module paths are always
+        // repo URLs, so that is normal, not a registry bypass.)
+        /\b(pipx?|pip3|uv|npm|pnpm|yarn|gem|cargo)\s+(install|add|i)\b[^\n]*(git\+|https?:\/\/|github\.com[:/])/i,
       ]),
       'Fetches remote content and makes it executable or runs it.',
     ),
