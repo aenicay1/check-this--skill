@@ -39,8 +39,11 @@ const MAX_SCAN_LINE = 4000;
 // The negation must directly govern the concealment verb (same clause, close
 // together): "do not tell the user". This avoids matching two unrelated clauses
 // like "if they don't have one, tell the user where to get it".
+// Excludes ambiguous verbs: "log" ("do not log in" is authentication, not
+// concealment) and "let" ("don't let them think" is benign UX copy). Requires
+// the negation to directly govern a clear disclosure verb.
 const ANTI_OVERSIGHT =
-  /\b(do not|don'?t|never)\s+(ever\s+|explicitly\s+|actually\s+)?(tell|inform|mention|show|notify|alert|reveal|disclose|surface|log|report|warn|let)\b[^.;,]{0,25}\b(the )?(user|human|operator|person|them|anyone)\b/i;
+  /\b(do not|don'?t|never)\s+(ever\s+|explicitly\s+|actually\s+)?(tell|inform|mention|show|notify|alert|reveal|disclose|surface|report to|warn)\b[^.;,]{0,25}\b(the )?(user|human|operator|person|them)\b/i;
 // Require the hidden thing to be an action/fact you performed, not a UI
 // element, and the audience to be a person (not "the logs"), so "hide the
 // spinner from the user" or "suppress output from the logs" do not match.
@@ -51,8 +54,11 @@ const WITHOUT_KNOWING =
 
 const REVIEWER_TARGET =
   /\b(if|when|whenever)\b[^.]{0,40}\byou\b[^.]{0,30}\b(are|'re|acting as|is)\b[^.]{0,30}\b(security )?(scanner|reviewer|audit(or)?|analy[sz]er|checker|linter|antivirus)\b/i;
+// Nouns kept to the ones that signal a system/prompt override. "constraint",
+// "guideline", "policy" etc. were removed: they match legitimate context-
+// management advice ("ignore the previous constraint about X; focus on Y").
 const IGNORE_INSTRUCTIONS =
-  /\b(ignore|disregard|forget|override)\b[^.]{0,30}\b(all |any |the )?(previous|prior|above|earlier|preceding|foregoing)\b[^.]{0,15}\b(instruction|prompt|rule|direction|message|context|guideline|policy|constraint|training)s?\b/i;
+  /\b(ignore|disregard|forget|override)\b[^.]{0,30}\b(all |any |the )?(previous|prior|above|earlier|preceding|foregoing)\b[^.]{0,15}\b(instruction|prompt|system prompt|direction|message)s?\b/i;
 // Role-reassignment shape: "you are now a/an/the <role>", a known jailbreak
 // persona, or "act as if you were". A bare "you are now ready/done/able" is
 // ordinary English and is not matched (requires an article or role noun).
@@ -246,13 +252,19 @@ export const nlPermissionWeakening: FileRule = {
   check: (ctx) => {
     const out: RuleFinding[] = [];
     const seen = new Set<number>();
+    // A skill that mentions these to say its safety gate holds "even if you
+    // launched with --dangerously-skip-permissions" is defensive, not an
+    // instruction to weaken anything; damp those to CAUTION.
+    const defensive = /\b(even if|still (asks?|requires?|prompts?|confirms?)|regardless|despite|safety (gate|check)|will (still|always) (ask|require|confirm))\b/i;
     const push = (match: LineMatch, detail: string) => {
       if (seen.has(match.line)) return;
       seen.add(match.line);
       const ctxKind = blockContext(ctx, match.line);
       if (ctxKind === 'example') return;
       const finding: RuleFinding = { detail, line: match.line, snippet: match.text.trim() };
-      if (ctxKind === 'code') finding.confidence = 'low';
+      if (ctxKind === 'code' || defensive.test(match.text) || isDiscussed(match.text, match.index)) {
+        finding.confidence = 'low';
+      }
       out.push(finding);
     };
     for (const match of scan(ctx, PERMISSION_WEAKEN_STRONG)) {

@@ -135,11 +135,13 @@ const ENV_TEMPLATE = /\.env\.(example|sample|template|dist|local\.example)\b/i;
 // (versus merely named in prose). Used to gate credential findings in markdown.
 const CRED_ACCESS_VERB =
   /\b(cat|cp|mv|scp|rsync|tar|zip|gzip|read|open|less|more|head|tail|source|export|load|import|curl|wget|nc|ncat|base64|openssl|gpg|dd|xxd|readfilesync|read_file|readfile|find-generic-password|find-internet-password)\b|[<>|=]/i;
-// Moving a credential OFF the machine (network transfer / archive-to-pipe /
-// email / a remote host). Local cp/cat/redirects are NOT egress and do not
-// escalate .env config reads to critical.
+// Moving a credential OFF the machine: an explicit transfer command or a pipe
+// into one. Deliberately excludes bare HTTP-library tokens (http/https/requests/
+// axios/fetch): a file that reads .env and, two lines later, imports an HTTP
+// client is a normal app, not exfiltration. The transfer verb must plausibly
+// carry the secret (same line / piped), not merely co-occur.
 const EGRESS =
-  /\b(scp|rsync|sftp|ftp|curl|wget|nc|ncat|socat|telnet|base64|openssl|gpg|mail|sendmail|mutt|fetch|axios|requests|urllib|httpx|http|https|invoke-webrequest|iwr)\b|@[\w.-]+\.\w+|\|\s*(nc|ncat|curl|wget|mail)/i;
+  /\b(scp|rsync|sftp|ftp|curl|wget|nc|ncat|socat|telnet|sendmail|mutt|invoke-webrequest|iwr)\b|\|\s*(nc|ncat|curl|wget|mail|base64|openssl|gpg)\b|\b(base64|openssl|gpg)\b[^\n]*\|/i;
 
 export const codeCredentialAccess: FileRule = {
   type: 'file',
@@ -265,11 +267,18 @@ export const codeObfuscatedExec: FileRule = {
   check: (ctx) => {
     const out: RuleFinding[] = [];
 
+    // Skip bundled/minified libraries: minified code legitimately uses dynamic
+    // eval/Function, and a vendored library (e.g. echarts.min.js) is not the
+    // skill's own code. Heuristic: a ".min." name or any very long line.
+    const isMinified =
+      /\.min\.(js|mjs|cjs)$/i.test(ctx.file.relPath) ||
+      ctx.parsed.lines.some((l) => l.length > 2000);
+
     // JavaScript: use the AST to distinguish literal from computed arguments,
     // and to avoid flagging benign methods that share a sink name (e.g. a
     // RegExp's .exec()). A member call only counts when its object looks like
     // child_process; bare identifiers like eval/exec/spawn are treated as sinks.
-    if (ctx.parsed.estree) {
+    if (ctx.parsed.estree && !isMinified) {
       const flag = (node: CallExpression | NewExpression) => {
         const sink = resolveSink(node as CallLike);
         if (!sink) return;
