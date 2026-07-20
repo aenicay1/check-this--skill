@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { lstat, readFile, readdir, readlink } from 'node:fs/promises';
 import path from 'node:path';
-import type { Bundle, BundleFile, BundleSource, FileKind, SymlinkEntry } from '../types.js';
+import { ScanError, type Bundle, type BundleFile, type BundleSource, type FileKind, type SymlinkEntry } from '../types.js';
 
 export interface WalkCaps {
   maxFiles: number;
@@ -86,7 +86,10 @@ function decodeText(buf: Buffer): { text: string; encoding: 'utf8' | 'utf16le' |
     return { text: buf.subarray(2).toString('utf16le'), encoding: 'utf16le' };
   }
   if (buf.length >= 2 && buf[0] === 0xfe && buf[1] === 0xff) {
-    const swapped = Buffer.from(buf.subarray(2));
+    // Drop a trailing odd byte: swap16() requires an even length and would
+    // otherwise throw RangeError, which a hostile 3-byte file could exploit.
+    const body = buf.subarray(2, 2 + (Math.floor((buf.length - 2) / 2) * 2));
+    const swapped = Buffer.from(body);
     swapped.swap16();
     return { text: swapped.toString('utf16le'), encoding: 'utf16be' };
   }
@@ -218,6 +221,14 @@ export async function walkBundle(
       if (encoding !== 'utf8') file.encoding = encoding;
       files.push(file);
     }
+  }
+
+  // If the root itself cannot be read, fail loudly rather than degrading to an
+  // empty bundle that would report PASS (a hostile or broken target must ERROR).
+  try {
+    await readdir(rootDir, { withFileTypes: true });
+  } catch (err) {
+    throw new ScanError(`cannot read scan target directory: ${(err as Error).message}`, { cause: err });
   }
 
   await visit(rootDir, 0);

@@ -2,6 +2,7 @@ import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { createWriteStream } from 'node:fs';
 import { pipeline } from 'node:stream/promises';
+import type { Readable } from 'node:stream';
 import { Parser } from 'tar';
 import { ScanError } from '../types.js';
 
@@ -35,7 +36,7 @@ function safeJoin(root: string, entryPath: string): string | undefined {
  * Strips the leading path component (GitHub tarballs nest under a top dir).
  */
 export async function extractTarball(
-  source: NodeJS.ReadableStream,
+  source: Readable,
   destDir: string,
   caps: ExtractCaps = DEFAULT_EXTRACT_CAPS,
 ): Promise<{ entries: number; skipped: string[] }> {
@@ -61,8 +62,15 @@ export async function extractTarball(
     },
   });
 
+  // Each entry's write is tracked here and awaited AFTER the parse stream
+  // completes: pipeline(source, parser) resolves when the archive bytes are
+  // consumed, not when the per-entry writes have flushed, so returning without
+  // this join would hand walkBundle truncated files.
+  const pending: Promise<void>[] = [];
+  let aborted = false;
+
   parser.on('entry', (entry) => {
-    void handleEntry(entry).catch(() => entry.resume());
+    pending.push(handleEntry(entry));
   });
 
   async function handleEntry(entry: {
@@ -70,45 +78,57 @@ export async function extractTarball(
     type: string;
     size?: number;
     resume: () => void;
-    pipe: (dest: NodeJS.WritableStream) => void;
   }): Promise<void> {
-    // Strip the top-level directory GitHub wraps everything in.
-    const stripped = entry.path.split('/').slice(1).join('/');
-    if (!stripped) {
+    try {
+      // Strip the top-level directory GitHub wraps everything in.
+      const stripped = entry.path.split('/').slice(1).join('/');
+      if (!stripped) {
+        entry.resume();
+        return;
+      }
+      if (entries >= caps.maxEntries || totalBytes >= caps.maxTotalBytes) {
+        if (!aborted) {
+          aborted = true;
+          skipped.push(`archive caps reached (${caps.maxEntries} entries / ${caps.maxTotalBytes} bytes); extraction stopped`);
+          source.destroy();
+        }
+        entry.resume();
+        return;
+      }
+      if ((entry.size ?? 0) > caps.maxEntryBytes) {
+        skipped.push(`${stripped} (entry exceeds size cap)`);
+        entry.resume();
+        return;
+      }
+      const dest = safeJoin(root, stripped);
+      if (!dest) {
+        skipped.push(`${entry.path} (path traversal rejected)`);
+        entry.resume();
+        return;
+      }
+      if (entry.type === 'Directory') {
+        await mkdir(dest, { recursive: true });
+        entry.resume();
+        return;
+      }
+      await mkdir(path.dirname(dest), { recursive: true });
+      entries += 1;
+      totalBytes += entry.size ?? 0;
+      await pipeline(entry as unknown as NodeJS.ReadableStream, createWriteStream(dest));
+    } catch (err) {
+      // Record rather than swallow, so a file missing from the scan is visible.
+      skipped.push(`${entry.path} (write failed: ${(err as Error).message})`);
       entry.resume();
-      return;
     }
-    if (entries >= caps.maxEntries || totalBytes >= caps.maxTotalBytes) {
-      skipped.push(`${entry.path} (archive caps reached)`);
-      entry.resume();
-      return;
-    }
-    if ((entry.size ?? 0) > caps.maxEntryBytes) {
-      skipped.push(`${stripped} (entry exceeds size cap)`);
-      entry.resume();
-      return;
-    }
-    const dest = safeJoin(root, stripped);
-    if (!dest) {
-      skipped.push(`${entry.path} (path traversal rejected)`);
-      entry.resume();
-      return;
-    }
-    if (entry.type === 'Directory') {
-      await mkdir(dest, { recursive: true });
-      entry.resume();
-      return;
-    }
-    await mkdir(path.dirname(dest), { recursive: true });
-    entries += 1;
-    totalBytes += entry.size ?? 0;
-    await pipeline(entry as unknown as NodeJS.ReadableStream, createWriteStream(dest));
   }
 
   try {
     await pipeline(source, parser);
   } catch (err) {
-    throw new ScanError(`failed to extract archive: ${(err as Error).message}`, { cause: err });
+    // A destroy() we initiated on hitting the caps surfaces here as a premature
+    // close; that is an intentional stop, not an extraction failure.
+    if (!aborted) throw new ScanError(`failed to extract archive: ${(err as Error).message}`, { cause: err });
   }
+  await Promise.all(pending);
   return { entries, skipped };
 }

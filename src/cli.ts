@@ -50,14 +50,18 @@ async function main(): Promise<void> {
       allow: opts.allow,
     });
     process.stdout.write(`${opts.json ? renderJson(result) : renderTerminal(result)}\n`);
-    process.exitCode = exitCodeFor(result.verdict, result.findings, opts.failOn);
+    process.exitCode = exitCodeFor(result.verdict, result.findings, { failOn: opts.failOn, strict: opts.strict });
   } catch (err) {
-    if (err instanceof ScanError) {
-      process.stderr.write(`${pc.red('error:')} ${err.message}\n`);
-      process.exitCode = 3;
-      return;
+    // Any failure, expected (ScanError) or not, is an ERROR verdict (exit 3).
+    // Crucially it must NOT escape as an uncaught exception, which Node exits
+    // with code 1 — the same code as CAUTION — letting a crash look like a
+    // completed scan to a CI gate.
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`${pc.red('error:')} ${message}\n`);
+    if (!(err instanceof ScanError)) {
+      process.stderr.write(pc.dim('  (unexpected internal error; the scan did not complete)\n'));
     }
-    throw err;
+    process.exitCode = 3;
   }
 }
 
