@@ -33,18 +33,59 @@ function osvSeverity(vuln: OsvVuln): Severity {
   if (label === 'HIGH') return 'high';
   if (label === 'MODERATE' || label === 'MEDIUM') return 'medium';
   if (label === 'LOW') return 'low';
+  // OSV's severity[].score is a CVSS vector string (e.g. "CVSS:3.1/AV:N/..."),
+  // not a number, so compute the base score from the vector.
   const cvss = vuln.severity?.find((s) => s.type.startsWith('CVSS'))?.score;
-  if (cvss) {
-    const m = /\/([0-9.]+)$/.exec(cvss) ?? /^([0-9.]+)$/.exec(cvss);
-    const score = m ? Number.parseFloat(m[1]!) : NaN;
-    if (!Number.isNaN(score)) {
-      if (score >= 9) return 'critical';
-      if (score >= 7) return 'high';
-      if (score >= 4) return 'medium';
-      return 'low';
-    }
+  const score = cvss ? cvssBaseScore(cvss) : undefined;
+  if (score !== undefined) {
+    if (score >= 9) return 'critical';
+    if (score >= 7) return 'high';
+    if (score >= 4) return 'medium';
+    if (score > 0) return 'low';
   }
-  return 'high';
+  return 'high'; // a vuln with no usable score: fail toward caution
+}
+
+const roundUp1 = (x: number): number => Math.ceil(x * 10) / 10;
+
+/**
+ * Compute a CVSS v3.0/3.1 base score from a vector string. Returns undefined
+ * for CVSS v2 or unparseable vectors. Implements the standard formula so an
+ * OSV entry that only carries a vector still maps to the right severity band.
+ */
+export function cvssBaseScore(vector: string): number | undefined {
+  if (!/^CVSS:3\.[01]\//.test(vector)) return undefined;
+  const m = new Map<string, string>();
+  for (const part of vector.split('/').slice(1)) {
+    const [k, v] = part.split(':');
+    if (k && v) m.set(k, v);
+  }
+  const AV: Record<string, number> = { N: 0.85, A: 0.62, L: 0.55, P: 0.2 };
+  const AC: Record<string, number> = { L: 0.77, H: 0.44 };
+  const UI: Record<string, number> = { N: 0.85, R: 0.62 };
+  const CIA: Record<string, number> = { H: 0.56, L: 0.22, N: 0 };
+  const scopeChanged = m.get('S') === 'C';
+  const PR_U: Record<string, number> = { N: 0.85, L: 0.62, H: 0.27 };
+  const PR_C: Record<string, number> = { N: 0.85, L: 0.68, H: 0.5 };
+  const av = AV[m.get('AV') ?? ''];
+  const ac = AC[m.get('AC') ?? ''];
+  const ui = UI[m.get('UI') ?? ''];
+  const pr = (scopeChanged ? PR_C : PR_U)[m.get('PR') ?? ''];
+  const c = CIA[m.get('C') ?? ''];
+  const iC = CIA[m.get('I') ?? ''];
+  const a = CIA[m.get('A') ?? ''];
+  if ([av, ac, ui, pr, c, iC, a].some((x) => x === undefined)) return undefined;
+
+  const iss = 1 - (1 - c!) * (1 - iC!) * (1 - a!);
+  const impact = scopeChanged
+    ? 7.52 * (iss - 0.029) - 3.25 * Math.pow(iss - 0.02, 15)
+    : 6.42 * iss;
+  if (impact <= 0) return 0;
+  const exploitability = 8.22 * av! * ac! * pr! * ui!;
+  const raw = scopeChanged
+    ? Math.min(1.08 * (impact + exploitability), 10)
+    : Math.min(impact + exploitability, 10);
+  return roundUp1(raw);
 }
 
 export interface DepsAuditResult {
