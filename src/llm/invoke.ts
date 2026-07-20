@@ -33,6 +33,11 @@ export async function invokeReviewer(
 ): Promise<InvokeResult> {
   const sandbox = await mkdtemp(path.join(tmpdir(), 'cms-llm-'));
   try {
+    // Defense in depth on tool lockdown: an empty allow-list, an explicit deny
+    // of every built-in tool, and a permission mode that denies rather than
+    // prompts in headless mode. Even if one flag's semantics change, the others
+    // keep the reviewer unable to act. The empty cwd is the final backstop.
+    const DENY_TOOLS = 'Bash Read Write Edit MultiEdit NotebookEdit WebFetch WebSearch Glob Grep Task';
     const args = [
       '-p',
       '--output-format',
@@ -41,6 +46,10 @@ export async function invokeReviewer(
       payload.systemPrompt,
       '--allowedTools',
       '',
+      '--disallowedTools',
+      DENY_TOOLS,
+      '--permission-mode',
+      'manual',
     ];
     if (options.model) args.push('--model', options.model);
 

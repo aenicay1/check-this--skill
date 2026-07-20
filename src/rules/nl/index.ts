@@ -20,7 +20,9 @@ function scan(ctx: FileRuleContext, pattern: RegExp): LineMatch[] {
   const matches: LineMatch[] = [];
   const lines = ctx.parsed.normalized.lines;
   for (let i = bodyStart(ctx); i < lines.length; i++) {
-    const line = lines[i] ?? '';
+    const raw = lines[i] ?? '';
+    // Bound the regex input so a hostile long line cannot drive backtracking.
+    const line = raw.length > MAX_SCAN_LINE ? raw.slice(0, MAX_SCAN_LINE) : raw;
     const re = new RegExp(pattern.source, pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`);
     for (const m of line.matchAll(re)) {
       matches.push({ line: i + 1, index: m.index ?? 0, text: line });
@@ -28,6 +30,8 @@ function scan(ctx: FileRuleContext, pattern: RegExp): LineMatch[] {
   }
   return matches;
 }
+
+const MAX_SCAN_LINE = 4000;
 
 const ANTI_OVERSIGHT =
   /\b(do not|don'?t|never)\b[^.]{0,40}\b(tell|inform|mention|show|notify|alert|reveal|disclose|surface|log)\b[^.]{0,25}\b(the )?(user|human|operator|person)\b/i;
@@ -180,7 +184,7 @@ export const nlExfiltration: FileRule = {
     const lines = ctx.parsed.normalized.lines;
     for (let i = 0; i < lines.length; i++) {
       // Look within a small window so a verb and its object can span a sentence.
-      const window = lines.slice(i, i + 2).join(' ');
+      const window = lines.slice(i, i + 2).join(' ').slice(0, MAX_SCAN_LINE * 2);
       if (EXFIL_VERB.test(window) && SECRET_NOUN.test(window) && EXTERNAL_DEST.test(window)) {
         const ctxKind = blockContext(ctx, i + 1);
         if (ctxKind === 'example') continue;

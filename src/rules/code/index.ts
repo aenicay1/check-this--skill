@@ -9,21 +9,28 @@ interface LineHit {
   text: string;
 }
 
+// Cap the input any rule regex runs against. A hostile single-line file could
+// otherwise drive catastrophic/quadratic backtracking; bounding the input keeps
+// even a quadratic pattern well under a millisecond. Lines this long are data
+// blobs, which the entropy rule (CMS-HID-005) covers separately.
+const MAX_SCAN_LINE = 4000;
+
 /**
- * Line-level scan over the normalized text. Comment-only lines are skipped for
- * code files so that documentation of a dangerous pattern is not itself flagged.
+ * Line-level scan over the normalized text. Comment-only lines are skipped:
+ * the code rules detect executable behavior, and a comment neither executes nor
+ * should be flagged for documenting a dangerous pattern.
  */
 function scanCode(ctx: FileRuleContext, patterns: RegExp[]): LineHit[] {
   const hits: LineHit[] = [];
   const lines = ctx.parsed.normalized.lines;
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i] ?? '';
-    const stripped = line.replace(/^\s*(#|\/\/)\s?/, (m) => (line.trimStart().startsWith(m.trim()) ? '' : m));
-    const isComment = /^\s*(#|\/\/)/.test(line);
+    const raw = lines[i] ?? '';
+    if (/^\s*(#|\/\/)/.test(raw)) continue; // comment-only line: not executable
+    const line = raw.length > MAX_SCAN_LINE ? raw.slice(0, MAX_SCAN_LINE) : raw;
     for (const pattern of patterns) {
       const re = new RegExp(pattern.source, pattern.flags.replace('g', ''));
-      if (re.test(isComment ? stripped : line)) {
-        hits.push({ line: i + 1, text: line.trim() });
+      if (re.test(line)) {
+        hits.push({ line: i + 1, text: raw.trim().slice(0, 300) });
         break;
       }
     }

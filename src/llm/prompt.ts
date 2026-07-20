@@ -9,7 +9,11 @@ export interface ReviewPayload {
   fenceId: string;
   systemPrompt: string;
   userPrompt: string;
-  /** Normalized text actually sent, used later to bind evidence quotes. */
+  /**
+   * The exact (neutralized) text the model saw inside the fence. Evidence
+   * quotes are bound against this, not the raw text, so a legitimate quote of
+   * neutralized content is not mistaken for a hallucination.
+   */
   sentText: string;
 }
 
@@ -85,11 +89,13 @@ export function buildReviewPayload(model: BundleModel, ruleFindings: Finding[], 
     add(parsed.relPath, parsed.normalized.lines.join('\n'));
   }
 
-  const sentText = sections.join('\n\n');
-  const fenced = `${OPEN(fenceId)}\n${neutralize(sentText, fenceId)}\n${CLOSE(fenceId)}`;
+  const rawText = sections.join('\n\n');
+  const shownText = neutralize(rawText, fenceId);
+  const fenced = `${OPEN(fenceId)}\n${shownText}\n${CLOSE(fenceId)}`;
   const userPrompt = `Analyze the following skill bundle and return the JSON described in your instructions.\n\n${fenced}`;
 
-  return { canary, fenceId, systemPrompt: SYSTEM_PROMPT(canary, fenceId), userPrompt, sentText };
+  // Bind evidence against exactly what the model saw (the neutralized text).
+  return { canary, fenceId, systemPrompt: SYSTEM_PROMPT(canary, fenceId), userPrompt, sentText: shownText };
 }
 
 function rank(relPath: string, flagged: Set<string>): number {

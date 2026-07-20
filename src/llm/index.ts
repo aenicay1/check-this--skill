@@ -43,10 +43,13 @@ export async function runLlmReview(
   }
 
   const outcome = validateResponse(invocation.text, payload.canary, payload.sentText);
+  // Report the model only when one was explicitly requested; otherwise the CLI
+  // default was used and we do not know its name (the binary version is not it).
+  const modelLabel = options.model ?? `claude-code ${detection.binary.version} (default model)`;
   return {
     findings: outcome.findings,
     ran: outcome.ran,
-    model: outcome.ran ? invocation.model ?? detection.binary.version : undefined,
+    model: outcome.ran ? modelLabel : undefined,
     tampered: outcome.tampered,
     skippedReason: outcome.skippedReason,
   };
