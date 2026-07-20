@@ -1,6 +1,7 @@
 import type { Rule } from '../types.js';
 import { bundleRules } from './bundle/index.js';
 import { codeRules } from './code/index.js';
+import { depRules } from './deps/index.js';
 import { frontmatterRules } from './frontmatter/index.js';
 import { hiddenRules } from './hidden/index.js';
 import { nlRules } from './nl/index.js';
@@ -21,5 +22,6 @@ export const allRules: Rule[] = [
   ...codeRules,
   ...persistRules,
   ...frontmatterRules,
+  ...depRules,
   ...bundleRules,
 ];
