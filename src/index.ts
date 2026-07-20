@@ -1,3 +1,4 @@
+import { acquireGithub } from './acquire/github.js';
 import { acquireLocal } from './acquire/local.js';
 import { walkBundle } from './bundle/walk.js';
 import { auditDependencies } from './deps/osv.js';
@@ -24,11 +25,9 @@ function isRemoteTarget(target: string): boolean {
  * Scan a skill bundle. Read-only: nothing from the bundle is ever executed.
  */
 export async function scan(target: string, options: ScanOptions = {}): Promise<ScanResult> {
-  if (isRemoteTarget(target)) {
-    throw new ScanError('remote targets are not supported yet; clone-free GitHub fetching lands in an upcoming release');
-  }
-
-  const { rootDir, source } = await acquireLocal(target);
+  const { rootDir, source } = isRemoteTarget(target)
+    ? await acquireGithub(target)
+    : await acquireLocal(target);
   const bundle = await walkBundle(rootDir, source);
   const model = parseBundle(bundle);
   const allow = await loadAllowEntries(options.allow, process.cwd());
