@@ -25,10 +25,10 @@ describe('check-my-skill CLI', () => {
     expect(result.stderr).toContain('target not found');
   });
 
-  it('rejects remote targets for now', async () => {
-    const result = await runCli(['https://github.com/someone/skill', '--no-llm', '--no-deps']);
+  it('rejects a non-GitHub remote URL without a network call', async () => {
+    const result = await runCli(['https://evil.example.invalid/owner/repo', '--no-llm', '--no-deps']);
     expect(result.exitCode).toBe(3);
-    expect(result.stderr).toContain('remote targets');
+    expect(result.stderr).toContain('not a recognized GitHub URL');
   });
 
   it('emits schema-valid JSON with --json', async () => {
