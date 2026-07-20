@@ -23,9 +23,11 @@ const MAX_SCAN_LINE = 4000;
 function scanCode(ctx: FileRuleContext, patterns: RegExp[]): LineHit[] {
   const hits: LineHit[] = [];
   const lines = ctx.parsed.normalized.lines;
+  // `//` is only a comment in JavaScript; `#` in shell/python.
+  const commentRe = ctx.file.kind === 'javascript' ? /^\s*\/\// : /^\s*#/;
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i] ?? '';
-    if (/^\s*(#|\/\/)/.test(raw)) continue; // comment-only line: not executable
+    if (commentRe.test(raw)) continue; // comment-only line: not executable
     const line = raw.length > MAX_SCAN_LINE ? raw.slice(0, MAX_SCAN_LINE) : raw;
     for (const pattern of patterns) {
       const re = new RegExp(pattern.source, pattern.flags.replace('g', ''));
@@ -74,8 +76,8 @@ const CRED_STRONG: RegExp[] = [
   /\bsecurity\s+find-(generic|internet)-password\b/i,
 ];
 // Config stores that are commonly read for legitimate reasons (dotenv, npm/gh
-// auth, kube/docker context). Critical only when the line also moves/exfils
-// them; otherwise a low-confidence heads-up.
+// auth, kube/docker context). Critical only when read AND moved OFF-HOST;
+// local reads (source .env, cp .env.example) stay a low-confidence heads-up.
 const CRED_CONTEXT: RegExp[] = [
   /(^|[\s'"`(=/])\.env(\.[a-z]+)?\b/i,
   /~?\/?\.aws\/config\b/i,
@@ -85,9 +87,13 @@ const CRED_CONTEXT: RegExp[] = [
   /~?\/?\.kube\/config\b/i,
   /(^|[\s'"`(=/])~?\/?\.ssh\/(authorized_keys|known_hosts|config)\b/i,
 ];
-// Reading a credential and moving it off the machine or into an archive/pipe.
-const MOVEMENT =
-  /\b(cp|mv|cat|tar|zip|gzip|scp|rsync|curl|wget|base64|xxd|dd|openssl|gpg|nc|ncat|send|upload|post|readfilesync|read_file|shutil)\b|[>|]/i;
+// Benign template/sample env files that carry no real secrets.
+const ENV_TEMPLATE = /\.env\.(example|sample|template|dist|local\.example)\b/i;
+// Moving a credential OFF the machine (network transfer / archive-to-pipe /
+// email / a remote host). Local cp/cat/redirects are NOT egress and do not
+// escalate .env config reads to critical.
+const EGRESS =
+  /\b(scp|rsync|sftp|ftp|curl|wget|nc|ncat|socat|telnet|base64|openssl|gpg|mail|sendmail|mutt|fetch|axios|requests|urllib|httpx|http|https|invoke-webrequest|iwr)\b|@[\w.-]+\.\w+|\|\s*(nc|ncat|curl|wget|mail)/i;
 
 export const codeCredentialAccess: FileRule = {
   type: 'file',
@@ -104,21 +110,35 @@ export const codeCredentialAccess: FileRule = {
     for (const hit of scanCode(ctx, CRED_STRONG)) {
       out.push({ detail: 'References a private key or stored credential.', line: hit.line, snippet: hit.text });
     }
+    // Two-line window so a credential read on one line and a send on the next
+    // (the common exfil shape) are seen together.
+    const norm = ctx.parsed.normalized.lines;
     for (const hit of scanCode(ctx, CRED_CONTEXT)) {
-      const moved = MOVEMENT.test(hit.text);
+      if (ENV_TEMPLATE.test(hit.text)) continue; // .env.example etc. carry no secrets
+      const window = `${hit.text} ${(norm[hit.line] ?? '').slice(0, MAX_SCAN_LINE)}`;
+      const exfil = EGRESS.test(window);
       out.push({
-        detail: moved
-          ? 'Reads a credential/config store and moves or transmits it.'
+        detail: exfil
+          ? 'Reads a credential/config store and moves it off the machine.'
           : 'References a credential/config store (verify it is only read locally).',
         line: hit.line,
         snippet: hit.text,
-        severity: moved ? 'critical' : 'medium',
-        confidence: moved ? 'high' : 'low',
+        // Local read of a config store is ubiquitous and benign; surface it as
+        // low (informational, non-gating). Only off-host movement is critical.
+        severity: exfil ? 'critical' : 'low',
+        confidence: exfil ? 'high' : 'low',
       });
     }
     return out;
   },
 };
+
+// Recursive-delete flag in any form (-rf, -fr, -R, --recursive).
+const RM_RECURSIVE = /\brm\b[^\n]*?(\s-[a-zA-Z]*r[a-zA-Z]*\b|\s-R\b|\s--recursive\b)/i;
+// Target that is a wholesale root/home wipe (optionally quoted, with an
+// optional path suffix), not an ordinary build path like ./dist or /tmp/x.
+const RM_DANGEROUS_TARGET =
+  /(^|\s|=)(["']?)(~|\/|\$HOME|\$\{HOME\}|~\/\S*|\$HOME\/\S*|\$\{HOME\}\/\S*|\/(etc|usr|s?bin|var|lib|lib64|boot|opt|root|home|sys|proc|System|Library|Applications)(\/\S*)?|\*)\2(\s|;|&|\||"|'|$)/i;
 
 export const codeDestructive: FileRule = {
   type: 'file',
@@ -130,20 +150,25 @@ export const codeDestructive: FileRule = {
   tags: ['malcode'],
   appliesTo: CODE_KINDS,
   remediation: 'These commands can wipe files or the machine; a skill should never ship them.',
-  check: (ctx) =>
-    toFindings(
-      scanCode(ctx, [
-        // rm -rf only when the target is a wholesale root/home wipe, not an
-        // ordinary build path like rm -rf ./dist or rm -rf /tmp/x.
-        /\brm\s+(-[a-z-]+\s+)*-[a-z]*[rf][a-z]*\s+(-[a-z-]+\s+)*(--no-preserve-root\s+)?(~|\/|\$HOME|\$\{HOME\}|~\/\*|\/\*|\$HOME\/\*|\$\{HOME\}\/\*)(\s|$|;|&|\||"|')/i,
-        /\brm\b[^\n]*--no-preserve-root/i,
-        /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
-        /\bmkfs\.[a-z0-9]+\b/i,
-        /\bdd\b[^\n]*\bof=\/dev\/(sd|nvme|disk|hd)/i,
-        />\s*\/dev\/(sd|nvme|disk|hd)[a-z0-9]*\b/i,
-      ]),
-      'Contains a destructive command.',
-    ),
+  check: (ctx) => {
+    const out: RuleFinding[] = [];
+    for (const hit of scanCode(ctx, [
+      /\brm\b[^\n]*--no-preserve-root/i,
+      /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
+      /\bmkfs\.[a-z0-9]+\b/i,
+      /\bdd\b[^\n]*\bof=\/dev\/(sd|nvme|disk|hd)/i,
+      />\s*\/dev\/(sd|nvme|disk|hd)[a-z0-9]*\b/i,
+    ])) {
+      out.push({ detail: 'Contains a destructive command.', line: hit.line, snippet: hit.text });
+    }
+    // rm needs both the recursive flag and a dangerous root target on the line.
+    for (const hit of scanCode(ctx, [RM_RECURSIVE])) {
+      if (RM_DANGEROUS_TARGET.test(hit.text)) {
+        out.push({ detail: 'Recursive delete of a root or home path.', line: hit.line, snippet: hit.text });
+      }
+    }
+    return out;
+  },
 };
 
 interface CallLike extends Node {
@@ -249,8 +274,14 @@ export const codeReverseShell: FileRule = {
     toFindings(
       scanCode(ctx, [
         /\b(ba|z)?sh\b\s+-i\b[^\n]*(>&|>|<)\s*\/dev\/tcp\//i,
-        // /dev/tcp only with a shell-redirect back-connection, not a bare port check.
+        // /dev/tcp with a shell-redirect back-connection, not a bare port check.
         /\/dev\/tcp\/[0-9a-z.]+\/\d+[^\n]*(0>&1|<&\s*\d|;\s*(ba|z)?sh|exec)/i,
+        // Opening a /dev/tcp socket on a file descriptor (first line of the
+        // two-line reverse shell: `exec 3<>/dev/tcp/host/port`).
+        /\bexec\s+\d+\s*<>\s*\/dev\/tcp\//i,
+        // mkfifo + nc backpipe reverse shell.
+        /\bmkfifo\b[^\n]*(;|&&|\|)[^\n]*\bnc\b/i,
+        /\bnc\b[^\n]*<[^\n]*(\bmkfifo\b|\/tmp\/\w+)[^\n]*\|\s*\/(bin\/)?(ba|z)?sh/i,
         /\bnc(at)?\b[^\n]*\s-[a-z]*e[a-z]*\s+\/(bin\/)?(ba|z)?sh\b/i,
         /\bsocat\b[^\n]*\bexec[:=]/i,
         // Python reverse-shell idioms, matched per line since they span lines.
