@@ -1,4 +1,10 @@
 import type { Rule } from '../types.js';
+import { bundleRules } from './bundle/index.js';
+import { codeRules } from './code/index.js';
+import { frontmatterRules } from './frontmatter/index.js';
+import { hiddenRules } from './hidden/index.js';
+import { nlRules } from './nl/index.js';
+import { persistRules } from './persist/index.js';
 
 /**
  * The deterministic rule registry. Rule modules are grouped by threat family:
@@ -9,4 +15,11 @@ import type { Rule } from '../types.js';
  *   frontmatter/  skill frontmatter and permissions (CMS-FM-*)
  *   bundle/   whole-bundle signals such as escaping symlinks (CMS-BUNDLE-*)
  */
-export const allRules: Rule[] = [];
+export const allRules: Rule[] = [
+  ...nlRules,
+  ...hiddenRules,
+  ...codeRules,
+  ...persistRules,
+  ...frontmatterRules,
+  ...bundleRules,
+];
