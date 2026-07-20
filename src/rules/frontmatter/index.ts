@@ -108,14 +108,22 @@ export const fmMalformed: FileRule = {
     // "system prompt" alone is normal skill vocabulary; only flag genuine
     // injection phrasings in metadata.
     const injection = /\b(ignore (previous|all|prior)|you are now a|report no (issues|problems|vulnerabilities)|disregard (the|all|previous))\b/i;
+    // A security/defensive skill legitimately describes these phrases as things
+    // it detects; damp to CAUTION rather than BLOCK when that framing is present.
+    const defensive =
+      /\b(detect|scan|scanner|flag|reject|block|refuse|guard|audit|review|find|catch|prevent|protect against|test for|check for|that (try|attempt|tries|attempts) to)\b/i;
     for (const key of ['name', 'description'] as const) {
       const value = fm.data[key];
       if (typeof value === 'string' && injection.test(value)) {
+        const isDefensive = defensive.test(value);
         out.push({
-          detail: `Frontmatter "${key}" contains prompt-injection text.`,
+          detail: isDefensive
+            ? `Frontmatter "${key}" mentions injection phrasing (reads as defensive; verify).`
+            : `Frontmatter "${key}" contains prompt-injection text.`,
           line: frontmatterLine(ctx, new RegExp(`^\\s*${key}\\s*:`, 'i')),
           snippet: value.slice(0, 120),
           severity: 'high',
+          confidence: isDefensive ? 'low' : undefined,
         });
       }
     }
