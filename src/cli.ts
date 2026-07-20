@@ -26,9 +26,22 @@ async function main(): Promise<void> {
     .option('--strict', 'let low-confidence findings escalate the verdict past CAUTION')
     .option('--fail-on <severity>', 'exit non-zero only for findings at or above this severity', parseSeverity)
     .option('--allow <rule...>', 'suppress findings by rule id (RULE-ID or RULE-ID:path/prefix)')
-    .allowExcessArguments(false);
+    .allowExcessArguments(false)
+    // Own the exit codes: usage errors must not exit 1 (which means CAUTION).
+    .exitOverride();
 
-  program.parse();
+  try {
+    program.parse();
+  } catch (err) {
+    const code = (err as { code?: string }).code ?? '';
+    // --help / --version are a normal exit 0, not a usage error.
+    if (code === 'commander.helpDisplayed' || code === 'commander.version' || code === 'commander.help') {
+      process.exitCode = 0;
+      return;
+    }
+    process.exitCode = 3; // usage error => ERROR, distinct from CAUTION(1)/BLOCK(2)
+    return;
+  }
   const target = program.args[0] ?? '';
   const opts = program.opts<{
     json?: boolean;

@@ -107,6 +107,9 @@ export async function extractTarball(
         return;
       }
       if (entry.type === 'Directory') {
+        // Count directories toward the entry cap too, so a directory-only
+        // archive (inode/disk bomb) hits the same abort path as files.
+        entries += 1;
         await mkdir(dest, { recursive: true });
         entry.resume();
         return;
