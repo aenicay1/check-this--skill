@@ -1,6 +1,7 @@
 import { acquireLocal } from './acquire/local.js';
 import { walkBundle } from './bundle/walk.js';
 import { auditDependencies } from './deps/osv.js';
+import { runLlmReview } from './llm/index.js';
 import { isAllowed } from './rules/engine.js';
 import { loadAllowEntries } from './ignore.js';
 import { parseBundle } from './parse/index.js';
@@ -53,10 +54,15 @@ export async function scan(target: string, options: ScanOptions = {}): Promise<S
     deps = { ran: audit.skippedReason === undefined, packagesQueried: audit.packagesQueried, skippedReason: audit.skippedReason };
   }
 
-  const llm = {
-    ran: false,
-    skippedReason: options.llm === false ? 'disabled via --no-llm' : 'LLM review not yet implemented',
-  };
+  // LLM semantic review (additive only; never downgrades a rule finding).
+  let llm: ScanResult['llm'] = { ran: false, skippedReason: 'disabled via --no-llm' };
+  if (options.llm !== false) {
+    const review = await runLlmReview(model, findings, { model: options.llmModel });
+    for (const f of review.findings) {
+      if (!isAllowed(f, allow)) findings.push(f);
+    }
+    llm = { ran: review.ran, model: review.model, tampered: review.tampered, skippedReason: review.skippedReason };
+  }
 
   sortFindings(findings);
 

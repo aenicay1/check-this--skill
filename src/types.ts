@@ -191,6 +191,8 @@ export type Rule = FileRule | BundleRule;
 export interface ScanOptions {
   /** Semantic review via the local claude binary. Default true. */
   llm?: boolean;
+  /** Model passed to the local claude binary for the review stage. */
+  llmModel?: string;
   /** OSV.dev dependency audit. Default true. */
   deps?: boolean;
   /** Let low-confidence findings escalate the verdict past CAUTION. */

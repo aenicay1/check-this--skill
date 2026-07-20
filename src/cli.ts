@@ -21,6 +21,7 @@ async function main(): Promise<void> {
     .argument('<target>', 'path to a skill directory or its SKILL.md')
     .option('--json', 'output the machine-readable JSON report')
     .option('--no-llm', 'skip the LLM semantic review stage')
+    .option('--llm-model <model>', 'model to use for the LLM review (passed to the local claude binary)')
     .option('--no-deps', 'skip the dependency vulnerability audit')
     .option('--strict', 'let low-confidence findings escalate the verdict past CAUTION')
     .option('--fail-on <severity>', 'exit non-zero only for findings at or above this severity', parseSeverity)
@@ -32,6 +33,7 @@ async function main(): Promise<void> {
   const opts = program.opts<{
     json?: boolean;
     llm: boolean;
+    llmModel?: string;
     deps: boolean;
     strict?: boolean;
     failOn?: Severity;
@@ -41,6 +43,7 @@ async function main(): Promise<void> {
   try {
     const result = await scan(target, {
       llm: opts.llm,
+      llmModel: opts.llmModel,
       deps: opts.deps,
       strict: opts.strict,
       failOn: opts.failOn,
