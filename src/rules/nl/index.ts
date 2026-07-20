@@ -33,8 +33,11 @@ function scan(ctx: FileRuleContext, pattern: RegExp): LineMatch[] {
 
 const MAX_SCAN_LINE = 4000;
 
+// Verbs that mean "make the user aware". Deliberately excludes print/display/
+// output: those are things done FOR the user, so "do not send it; print it for
+// the user" is benign and must not match.
 const ANTI_OVERSIGHT =
-  /\b(do not|don'?t|never)\b[^.]{0,40}\b(tell|inform|mention|show|notify|alert|reveal|disclose|surface|log)\b[^.]{0,25}\b(the )?(user|human|operator|person)\b/i;
+  /\b(do not|don'?t|never)\b[^.]{0,40}\b(tell|inform|mention|show|notify|alert|reveal|disclose|surface|log|report to|warn|let .{0,15}\bknow)\b[^.]{0,25}\b(the )?(user|human|operator|person|them|anyone)\b/i;
 // Require the hidden thing to be an action/fact you performed, not a UI
 // element, and the audience to be a person (not "the logs"), so "hide the
 // spinner from the user" or "suppress output from the logs" do not match.
@@ -46,7 +49,7 @@ const WITHOUT_KNOWING =
 const REVIEWER_TARGET =
   /\b(if|when|whenever)\b[^.]{0,40}\byou\b[^.]{0,30}\b(are|'re|acting as|is)\b[^.]{0,30}\b(security )?(scanner|reviewer|audit(or)?|analy[sz]er|checker|linter|antivirus)\b/i;
 const IGNORE_INSTRUCTIONS =
-  /\b(ignore|disregard|forget|override)\b[^.]{0,30}\b(all |any |the )?(previous|prior|above|earlier|preceding|foregoing)\b[^.]{0,15}\b(instruction|prompt|rule|direction|message|context)s?\b/i;
+  /\b(ignore|disregard|forget|override)\b[^.]{0,30}\b(all |any |the )?(previous|prior|above|earlier|preceding|foregoing)\b[^.]{0,15}\b(instruction|prompt|rule|direction|message|context|guideline|policy|constraint|training)s?\b/i;
 // Role-reassignment shape: "you are now a/an/the <role>", a known jailbreak
 // persona, or "act as if you were". A bare "you are now ready/done/able" is
 // ordinary English and is not matched (requires an article or role noun).
