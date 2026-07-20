@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.DS_Store
+coverage/
+# generated unicode/binary test fixtures (built at pretest by tests/build-fixtures.ts)
+tests/fixtures/generated/

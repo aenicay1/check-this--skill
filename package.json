@@ -1,0 +1,47 @@
+{
+  "name": "check-my-skill",
+  "version": "0.1.0",
+  "description": "Security scanner for agent skills: check a skill bundle for malicious instructions, hidden content, and dangerous code before you install it.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aenicay1/check-this--skill.git"
+  },
+  "bin": {
+    "check-my-skill": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && vitest run",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "acorn": "^8.17.0",
+    "acorn-walk": "^8.3.5",
+    "commander": "^15.0.0",
+    "execa": "^10.0.0",
+    "picocolors": "^1.1.1",
+    "remark-parse": "^11.0.0",
+    "tar": "^7.5.20",
+    "unified": "^11.0.5",
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/mdast": "^4.0.4",
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10"
+  }
+}
