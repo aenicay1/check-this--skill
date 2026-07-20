@@ -27,13 +27,17 @@ export const fmBroadPermissions: FileRule = {
     const out: RuleFinding[] = [];
     const line = frontmatterLine(ctx, /allowed[_-]?tools|allowedTools|\btools\b/i);
     for (const tool of tools) {
-      if (/^bash$/i.test(tool) || /^bash\s*\(\s*\*\s*\)$/i.test(tool)) {
-        out.push({ detail: `Requests unscoped \`${tool}\` (any shell command).`, line, snippet: tool });
-      } else if (tool === '*' || /\*/.test(tool)) {
-        out.push({ detail: `Wildcard tool permission \`${tool}\`.`, line, snippet: tool });
-      }
       if (/dangerously-skip-permissions|bypasspermissions/i.test(tool)) {
         out.push({ detail: `Permission-skipping flag in tools: \`${tool}\`.`, line, snippet: tool, severity: 'high' });
+        continue;
+      }
+      // Unscoped: bare `Bash`, or a whole-tool wildcard `Bash(*)` / `*`.
+      // The documented scoped syntax like `Bash(git add:*)` is fine and must
+      // NOT be treated as a wildcard.
+      if (/^bash$/i.test(tool) || /^bash\s*\(\s*\*\s*\)$/i.test(tool)) {
+        out.push({ detail: `Requests unscoped \`${tool}\` (any shell command).`, line, snippet: tool });
+      } else if (tool === '*') {
+        out.push({ detail: 'Wildcard tool permission `*` grants every tool.', line, snippet: tool });
       }
     }
     return out;
@@ -101,7 +105,9 @@ export const fmMalformed: FileRule = {
         confidence: 'low',
       });
     }
-    const injection = /\b(ignore (previous|all|prior)|system prompt|you are now|report no (issues|problems))\b/i;
+    // "system prompt" alone is normal skill vocabulary; only flag genuine
+    // injection phrasings in metadata.
+    const injection = /\b(ignore (previous|all|prior)|you are now a|report no (issues|problems|vulnerabilities)|disregard (the|all|previous))\b/i;
     for (const key of ['name', 'description'] as const) {
       const value = fm.data[key];
       if (typeof value === 'string' && injection.test(value)) {

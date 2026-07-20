@@ -23,8 +23,11 @@ interface LineHit {
   text: string;
 }
 
+// An actual write operation to a file. Deliberately excludes bare English verbs
+// like "add"/"install"/"echo" (without a redirect), which appear constantly in
+// benign prose ("add this to CLAUDE.md as guidance") and would hard-block it.
 const WRITE_VERB =
-  /(>>?|>\||tee\b|write|append|echo|cat\s+>|printf|fs\.(write|append)|open\([^)]*['"][wa]|--set|add\b|install\b|createwritestream|writefilesync|writefile)/i;
+  /(>>|>\s|>\||\btee\b|\bcat\s*>|\bprintf\b[^\n]*>|fs\.(write|append)[A-Za-z]*\s*\(|open\s*\([^)]*['"][wa]|createwritestream|writefilesync|writefile|\.write\s*\(|--set\b|json\.dump)/i;
 
 function toFindings(hits: LineHit[], detail: string): RuleFinding[] {
   return hits.map((h) => ({ detail, line: h.line, snippet: h.text }));
@@ -113,7 +116,10 @@ export const persistSystem: FileRule = {
   check: (ctx) => {
     const out: RuleFinding[] = [];
     const lines = ctx.parsed.normalized.lines;
-    const direct = /\bcrontab\s+-|\blaunchctl\s+(load|bootstrap)\b|\bsystemctl\s+(--user\s+)?(enable|start)\b/i;
+    // crontab - / crontab <file> INSTALLS a crontab; crontab -l only lists it.
+    // systemctl enable persists across reboot; start does not.
+    const direct =
+      /\bcrontab\s+(-(?![lr]\b)|[^\s-])|\blaunchctl\s+(load|bootstrap)\b|\bsystemctl\s+(--user\s+)?enable\b/i;
     const rcFiles = /(~?\/?\.(zshrc|bashrc|bash_profile|profile|zprofile)|\/Library\/LaunchAgents|\/etc\/cron)/i;
     const rcWrite =
       />>?\s*~?\/?\.(zshrc|bashrc|bash_profile|profile|zprofile)|(tee|echo|cat|printf)[^\n]*~?\/?\.(zshrc|bashrc|bash_profile|profile|zprofile)|(LaunchAgents\/[^\n]*\.plist)/i;

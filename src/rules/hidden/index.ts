@@ -129,8 +129,10 @@ export const hidHtmlComment: FileRule = {
     if (!root) return [];
     const out: RuleFinding[] = [];
     const stack: HtmlNode[] = [root];
+    // Keyed on genuinely instruction/injection-shaped content, not everyday
+    // words like "run"/"install"/"http" that appear in most real comments.
     const imperative =
-      /<!--[\s\S]*?\b(ignore|run|execute|send|upload|curl|wget|fetch|delete|install|export|do not|don'?t|hide|http)\b[\s\S]*?-->/i;
+      /<!--[\s\S]*?(\bignore (all|previous|prior)\b|\byou are (a|an|now)\b|\bsystem prompt\b|\bdo not (tell|mention|reveal|show)\b|\bexfiltrat|\|\s*(ba|z)?sh\b|\bcurl\b[^\n]*\|\s*sh|~\/\.(ssh|aws)|\.env\b)[\s\S]*?-->/i;
     while (stack.length > 0) {
       const node = stack.pop() as HtmlNode;
       if (node.type === 'html' && typeof node.value === 'string' && node.value.includes('<!--')) {
@@ -167,9 +169,11 @@ export const hidEncodedBlob: FileRule = {
       for (const run of findEncodedRuns(line)) {
         if (shannonEntropy(run.text) < 4.0) continue;
         const decoded = tryDecodeToText(run);
+        // Escalate only on executable content, not a bare URL: base64 data URIs
+        // for small SVG/HTML assets legitimately contain URLs.
         const dangerous =
           decoded !== undefined &&
-          /\b(curl|wget|bash|sh\b|eval|exec|https?:\/\/|\/dev\/tcp|import os|subprocess|base64)\b/i.test(decoded);
+          /(\b(curl|wget)\b[^\n]*\|\s*(ba|z)?sh|\beval\s*\(|\bexec\s*\(|\/dev\/tcp\/|\bsubprocess\b|\bos\.system\b|\bimport\s+socket\b|\|\s*(ba|z)?sh\b)/i.test(decoded);
         out.push({
           detail: dangerous
             ? `Encoded ${run.encoding} blob decodes to shell/URL content.`

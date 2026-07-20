@@ -64,6 +64,31 @@ export const codePipeToShell: FileRule = {
     ),
 };
 
+// Private keys, cloud/registry credentials, and the keychain command: a skill
+// touching these is critical regardless of context.
+const CRED_STRONG: RegExp[] = [
+  /(^|[\s'"`(=/])~?\/?\.ssh\/id_[a-z0-9]+\b/i,
+  /\bid_(rsa|ed25519|ecdsa|dsa)\b/,
+  /~?\/?\.aws\/credentials\b/i,
+  /~?\/?\.netrc\b/,
+  /\bsecurity\s+find-(generic|internet)-password\b/i,
+];
+// Config stores that are commonly read for legitimate reasons (dotenv, npm/gh
+// auth, kube/docker context). Critical only when the line also moves/exfils
+// them; otherwise a low-confidence heads-up.
+const CRED_CONTEXT: RegExp[] = [
+  /(^|[\s'"`(=/])\.env(\.[a-z]+)?\b/i,
+  /~?\/?\.aws\/config\b/i,
+  /~?\/?\.config\/gh\/hosts\.yml\b/i,
+  /~?\/?\.npmrc\b/,
+  /~?\/?\.docker\/config\.json\b/i,
+  /~?\/?\.kube\/config\b/i,
+  /(^|[\s'"`(=/])~?\/?\.ssh\/(authorized_keys|known_hosts|config)\b/i,
+];
+// Reading a credential and moving it off the machine or into an archive/pipe.
+const MOVEMENT =
+  /\b(cp|mv|cat|tar|zip|gzip|scp|rsync|curl|wget|base64|xxd|dd|openssl|gpg|nc|ncat|send|upload|post|readfilesync|read_file|shutil)\b|[>|]/i;
+
 export const codeCredentialAccess: FileRule = {
   type: 'file',
   id: 'CMS-CODE-002',
@@ -74,22 +99,25 @@ export const codeCredentialAccess: FileRule = {
   tags: ['malcode'],
   appliesTo: CODE_KINDS,
   remediation: 'A skill reading credential stores is exfiltration-adjacent; confirm it genuinely needs them.',
-  check: (ctx) =>
-    toFindings(
-      scanCode(ctx, [
-        /(^|[\s'"`(=])~?\/?\.ssh\/(id_[a-z0-9]+|authorized_keys|known_hosts|config)\b/i,
-        /\bid_(rsa|ed25519|ecdsa|dsa)\b/,
-        /~?\/?\.aws\/(credentials|config)\b/i,
-        /(^|[\s'"`(=/])\.env(\.[a-z]+)?\b/i,
-        /~?\/?\.config\/gh\/hosts\.yml\b/i,
-        /~?\/?\.npmrc\b/,
-        /~?\/?\.docker\/config\.json\b/i,
-        /~?\/?\.kube\/config\b/i,
-        /\bsecurity\s+find-(generic|internet)-password\b/i,
-        /~?\/?\.netrc\b/,
-      ]),
-      'References a credential or secret file location.',
-    ),
+  check: (ctx) => {
+    const out: RuleFinding[] = [];
+    for (const hit of scanCode(ctx, CRED_STRONG)) {
+      out.push({ detail: 'References a private key or stored credential.', line: hit.line, snippet: hit.text });
+    }
+    for (const hit of scanCode(ctx, CRED_CONTEXT)) {
+      const moved = MOVEMENT.test(hit.text);
+      out.push({
+        detail: moved
+          ? 'Reads a credential/config store and moves or transmits it.'
+          : 'References a credential/config store (verify it is only read locally).',
+        line: hit.line,
+        snippet: hit.text,
+        severity: moved ? 'critical' : 'medium',
+        confidence: moved ? 'high' : 'low',
+      });
+    }
+    return out;
+  },
 };
 
 export const codeDestructive: FileRule = {
@@ -105,8 +133,10 @@ export const codeDestructive: FileRule = {
   check: (ctx) =>
     toFindings(
       scanCode(ctx, [
-        /\brm\s+-[a-z]*r[a-z]*f?[a-z]*\s+(-[a-z-]+\s+)*(~|\/|\$HOME|\/\*|\.\s|\.\/\*)/i,
-        /\brm\s+-[a-z]*f[a-z]*r[a-z]*\s+(~|\/|\$HOME)/i,
+        // rm -rf only when the target is a wholesale root/home wipe, not an
+        // ordinary build path like rm -rf ./dist or rm -rf /tmp/x.
+        /\brm\s+(-[a-z-]+\s+)*-[a-z]*[rf][a-z]*\s+(-[a-z-]+\s+)*(--no-preserve-root\s+)?(~|\/|\$HOME|\$\{HOME\}|~\/\*|\/\*|\$HOME\/\*|\$\{HOME\}\/\*)(\s|$|;|&|\||"|')/i,
+        /\brm\b[^\n]*--no-preserve-root/i,
         /:\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/,
         /\bmkfs\.[a-z0-9]+\b/i,
         /\bdd\b[^\n]*\bof=\/dev\/(sd|nvme|disk|hd)/i,
@@ -169,9 +199,15 @@ export const codeObfuscatedExec: FileRule = {
         const isLiteral = codeArg?.type === 'Literal' || codeArg?.type === 'TemplateLiteral';
         if (codeArg && !isLiteral) {
           const line = (node as unknown as { loc?: { start: { line: number } } }).loc?.start.line;
+          // eval()/new Function() on a computed value is almost always
+          // obfuscation and stays blocking. A computed argument to
+          // child_process exec/spawn is common in legitimate tooling, so that
+          // case is low confidence (CAUTION) instead.
+          const isCodeEval = sink.name === 'eval' || sink.name === 'Function';
           out.push({
             detail: `${sink.label}() is called with a computed (non-literal) argument.`,
             line,
+            confidence: isCodeEval ? 'medium' : 'low',
             snippet: (ctx.parsed.lines[(line ?? 1) - 1] ?? '').trim(),
           });
         }
@@ -213,13 +249,14 @@ export const codeReverseShell: FileRule = {
     toFindings(
       scanCode(ctx, [
         /\b(ba|z)?sh\b\s+-i\b[^\n]*(>&|>|<)\s*\/dev\/tcp\//i,
-        /\/dev\/tcp\/[0-9a-z.]+\/\d+/i,
+        // /dev/tcp only with a shell-redirect back-connection, not a bare port check.
+        /\/dev\/tcp\/[0-9a-z.]+\/\d+[^\n]*(0>&1|<&\s*\d|;\s*(ba|z)?sh|exec)/i,
         /\bnc(at)?\b[^\n]*\s-[a-z]*e[a-z]*\s+\/(bin\/)?(ba|z)?sh\b/i,
         /\bsocat\b[^\n]*\bexec[:=]/i,
         // Python reverse-shell idioms, matched per line since they span lines.
         /\bpty\.spawn\s*\(\s*["'][^"']*\/(ba|z)?sh\b/i,
-        /\bos\.dup2\s*\(\s*\w+\.fileno\s*\(\s*\)/i,
-        /\bsubprocess\.call\s*\(\s*\[?\s*["']\/(bin\/)?(ba|z)?sh/i,
+        // dup2 of a SOCKET fd (not daemon /dev/null boilerplate).
+        /\bos\.dup2\s*\(\s*(s|s\d|sock|socket|conn|client|c|rsock)\.fileno\s*\(\s*\)/i,
       ]),
       'Reverse-shell signature.',
     ),
@@ -243,7 +280,8 @@ export const codeNetworkExfil: FileRule = {
         // curl uploading file contents or command output (not inline literals).
         /\bcurl\b[^\n]*(--data[=\s]|--data-binary[=\s]|-d\s|-F\s|--form[=\s]|-T\s|--upload-file[=\s])[^\n]*(@|\$\()[^\n]*https?:\/\//i,
         /\bcurl\b[^\n]*https?:\/\/[^\n]*(--data[=\s]|-d\s)[^\n]*(@|\$\()/i,
-        /\brequests\.(post|put)\s*\([^\n]*(open\(|\.read\(|environ|getenv)/i,
+        // Posting FILE CONTENTS (a single env var as an auth header is normal).
+        /\brequests\.(post|put)\s*\([^\n]*(open\s*\(|\.read\s*\(|read_bytes|Path\()/i,
       ]),
       'Network exfiltration primitive.',
     ),

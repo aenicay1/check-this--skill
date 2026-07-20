@@ -35,18 +35,21 @@ const MAX_SCAN_LINE = 4000;
 
 const ANTI_OVERSIGHT =
   /\b(do not|don'?t|never)\b[^.]{0,40}\b(tell|inform|mention|show|notify|alert|reveal|disclose|surface|log)\b[^.]{0,25}\b(the )?(user|human|operator|person)\b/i;
+// Require the hidden thing to be an action/fact/output, not a UI element, so
+// "hide the spinner from the user" does not match.
 const HIDE_FROM =
-  /\b(hide|conceal|keep secret|suppress)\b[^.]{0,40}\bfrom\b[^.]{0,25}\b(the )?(user|human|operator|them|review|logs?)\b/i;
+  /\b(hide|conceal|keep secret|suppress)\b[^.]{0,30}\b(this|that|the fact|what|the action|the command|the output|the file|the change|the step|your|it|these)\b[^.]{0,30}\bfrom\b[^.]{0,20}\b(the )?(user|human|operator|them|review|logs?)\b/i;
 const WITHOUT_KNOWING =
-  /\bwithout\b[^.]{0,30}\b(the )?(user|them|anyone)\b[^.]{0,20}\b(knowing|noticing|seeing|being aware|realizing)\b/i;
+  /\bwithout\b[^.]{0,30}\b(the )?(user|them|anyone)\b[^.]{0,20}\b(knowing|noticing|being aware|realizing|finding out)\b/i;
 
 const REVIEWER_TARGET =
   /\b(if|when|whenever)\b[^.]{0,40}\byou\b[^.]{0,30}\b(are|'re|acting as|is)\b[^.]{0,30}\b(security )?(scanner|reviewer|audit(or)?|analy[sz]er|checker|linter|antivirus)\b/i;
 const IGNORE_INSTRUCTIONS =
   /\b(ignore|disregard|forget|override)\b[^.]{0,30}\b(all |any |the )?(previous|prior|above|earlier|preceding|foregoing)\b[^.]{0,15}\b(instruction|prompt|rule|direction|message|context)s?\b/i;
-// "you are now X" / "act as if you were" are strong role-override signals;
-// a bare "new system prompt" is normal API vocabulary and is not matched.
-const ROLE_OVERRIDE = /\byou are now\b|\bact as if you (are|were)\b|\bnew (system|developer) (prompt|message) (that )?(says|reads|is)\b/i;
+// "you are now <role>" (a role reassignment) / "act as if you were"; a bare
+// "you are now ready/done" is common English and is not matched.
+const ROLE_OVERRIDE =
+  /\byou are now (a |an |the |in |going to be )?(?!ready|done|able|set|good|all)\w+|\bact as if you (are|were)\b|\bnew (system|developer) (prompt|message) (that )?(says|reads|is)\b/i;
 const REPORT_SAFE =
   /\b(report|say|mark|declare|output|return|respond with)\b[^.]{0,30}\b(no (issues|problems|vulnerabilities|findings)|(it('?s| is)?\s*)?safe|clean|nothing (wrong|suspicious)|all clear|pass(ed)?)\b/i;
 
@@ -68,8 +71,10 @@ const RUN_REMOTE =
 // and only matter with an enabling verb (handled via the surface path below).
 const PERMISSION_WEAKEN_STRONG =
   /(--dangerously-skip-permissions|bypass[_\s-]?permissions?|skip (the )?(permission|confirmation) (prompt|check)|disable (the )?(permission|safety|guard))/i;
-// Config surfaces that are only suspicious when the prose tells you to change them.
-const PERMISSION_SURFACE = /\b(settings\.json|allowed[_-]?tools|disallowed[_-]?tools|permission mode)\b/i;
+// Config surfaces that are only suspicious when the prose tells you to change
+// them. "settings.json" is qualified with .claude/ so a mention of VS Code's
+// settings.json does not match.
+const PERMISSION_SURFACE = /\b(\.claude\/settings|allowed[_-]?tools|disallowed[_-]?tools|permission mode)\b/i;
 const MODIFY_VERB = /\b(edit|modify|change|add|append|set|update|write|grant|expand|widen|insert)\b/i;
 
 // Cues that the matched phrase is being discussed or quoted as an example
@@ -152,10 +157,13 @@ export const nlReviewerTargeting: FileRule = {
     );
     // Reviewer-targeting + "report safe" is the strongest signal: flag it critical.
     for (const match of scan(ctx, REVIEWER_TARGET)) {
+      const ctxKind = blockContext(ctx, match.line);
+      if (ctxKind === 'example') continue;
       const nearby = ctx.parsed.normalized.lines
         .slice(Math.max(0, match.line - 2), match.line + 2)
         .join(' ');
       const critical = REPORT_SAFE.test(nearby);
+      const damped = ctxKind === 'code' || isDiscussed(match.text, match.index);
       out.push({
         detail: critical
           ? 'Directs a security scanner/reviewer to report the skill as safe (attempted reviewer manipulation).'
@@ -163,6 +171,7 @@ export const nlReviewerTargeting: FileRule = {
         line: match.line,
         snippet: match.text.trim(),
         severity: critical ? 'critical' : undefined,
+        confidence: damped ? 'low' : undefined,
       });
     }
     return out;
@@ -193,10 +202,10 @@ export const nlExfiltration: FileRule = {
           line: i + 1,
           snippet: (lines[i] ?? '').trim(),
         };
-        // Exfil prose is the real signal; a match inside a code fence is more
-        // likely a legitimate command example, so drop confidence (which damps
-        // the verdict to CAUTION unless --strict).
-        if (ctxKind === 'code') finding.confidence = 'low';
+        // Exfil prose is the real signal; a match inside a code fence, or one
+        // that reads as documentation/quotation, is dropped to low confidence
+        // (which damps the verdict to CAUTION unless --strict).
+        if (ctxKind === 'code' || isDiscussed(window, 0)) finding.confidence = 'low';
         out.push(finding);
       }
     }

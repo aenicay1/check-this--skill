@@ -2,8 +2,11 @@ import type { FileRule, FileRuleContext, RuleFinding } from '../../types.js';
 
 const MANIFEST_ONLY = ['manifest'] as const;
 
+// Lifecycle scripts routinely run local build steps (node build.js, husky
+// install, tsc). The dangerous shapes are fetching remote code or piping to a
+// shell, so require those specifically rather than any shell usage.
 const NETWORK_OR_SHELL =
-  /\b(curl|wget|node\s+-e|npx|bash|sh\s|eval|https?:\/\/|child_process|require\(['"]child_process|\|\s*sh)\b/i;
+  /\b(curl|wget)\b|\|\s*(ba|z)?sh\b|\bnode\s+-e\b|\beval\b|https?:\/\/|\bchild_process\b|base64\s+(-d|--decode)/i;
 
 export const depInstallScript: FileRule = {
   type: 'file',
