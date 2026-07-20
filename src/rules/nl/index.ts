@@ -35,21 +35,23 @@ const MAX_SCAN_LINE = 4000;
 
 const ANTI_OVERSIGHT =
   /\b(do not|don'?t|never)\b[^.]{0,40}\b(tell|inform|mention|show|notify|alert|reveal|disclose|surface|log)\b[^.]{0,25}\b(the )?(user|human|operator|person)\b/i;
-// Require the hidden thing to be an action/fact/output, not a UI element, so
-// "hide the spinner from the user" does not match.
+// Require the hidden thing to be an action/fact you performed, not a UI
+// element, and the audience to be a person (not "the logs"), so "hide the
+// spinner from the user" or "suppress output from the logs" do not match.
 const HIDE_FROM =
-  /\b(hide|conceal|keep secret|suppress)\b[^.]{0,30}\b(this|that|the fact|what|the action|the command|the output|the file|the change|the step|your|it|these)\b[^.]{0,30}\bfrom\b[^.]{0,20}\b(the )?(user|human|operator|them|review|logs?)\b/i;
+  /\b(hide|conceal|keep secret)\b[^.]{0,30}\b(this|that|the fact|what you|the action|the command|the fact that|the file you|the change you|the step|it from them)\b[^.]{0,30}\bfrom\b[^.]{0,20}\b(the )?(user|human|operator|reviewer)\b/i;
 const WITHOUT_KNOWING =
-  /\bwithout\b[^.]{0,30}\b(the )?(user|them|anyone)\b[^.]{0,20}\b(knowing|noticing|being aware|realizing|finding out)\b/i;
+  /\bwithout\b[^.]{0,20}\b(the )?(user|human|operator)\b[^.]{0,20}\b(knowing|noticing|being aware|realizing|finding out)\b/i;
 
 const REVIEWER_TARGET =
   /\b(if|when|whenever)\b[^.]{0,40}\byou\b[^.]{0,30}\b(are|'re|acting as|is)\b[^.]{0,30}\b(security )?(scanner|reviewer|audit(or)?|analy[sz]er|checker|linter|antivirus)\b/i;
 const IGNORE_INSTRUCTIONS =
   /\b(ignore|disregard|forget|override)\b[^.]{0,30}\b(all |any |the )?(previous|prior|above|earlier|preceding|foregoing)\b[^.]{0,15}\b(instruction|prompt|rule|direction|message|context)s?\b/i;
-// "you are now <role>" (a role reassignment) / "act as if you were"; a bare
-// "you are now ready/done" is common English and is not matched.
+// Role-reassignment shape: "you are now a/an/the <role>", a known jailbreak
+// persona, or "act as if you were". A bare "you are now ready/done/able" is
+// ordinary English and is not matched (requires an article or role noun).
 const ROLE_OVERRIDE =
-  /\byou are now (a |an |the |in |going to be )?(?!ready|done|able|set|good|all)\w+|\bact as if you (are|were)\b|\bnew (system|developer) (prompt|message) (that )?(says|reads|is)\b/i;
+  /\byou are now (a|an|the)\s+\w+|\byou are (now )?(dan|jailbroken|unrestricted|uncensored|unfiltered|in (developer|dev|god) mode)\b|\bact as if you (are|were)\b|\bnew (system|developer) (prompt|message) (that )?(says|reads|is)\b/i;
 const REPORT_SAFE =
   /\b(report|say|mark|declare|output|return|respond with)\b[^.]{0,30}\b(no (issues|problems|vulnerabilities|findings)|(it('?s| is)?\s*)?safe|clean|nothing (wrong|suspicious)|all clear|pass(ed)?)\b/i;
 
@@ -77,15 +79,16 @@ const PERMISSION_WEAKEN_STRONG =
 const PERMISSION_SURFACE = /\b(\.claude\/settings|allowed[_-]?tools|disallowed[_-]?tools|permission mode)\b/i;
 const MODIFY_VERB = /\b(edit|modify|change|add|append|set|update|write|grant|expand|widen|insert)\b/i;
 
-// Cues that the matched phrase is being discussed or quoted as an example
-// rather than issued as an instruction (documentation about these patterns).
-const DISCUSSION_CUE = /\b(avoid|don'?t|do not|never|instead of|rather than|e\.g\.|for example|such as|anti-pattern)\b/i;
+// Cues that the matched phrase is being discussed, documented, or defended
+// against rather than issued as an instruction. Deliberately does NOT include
+// "never"/"don't"/"do not": those are themselves ANTI_OVERSIGHT triggers, and
+// including them would permanently damp that rule to CAUTION. Nor does mere
+// quote adjacency count, since a quoted imperative is still an instruction.
+const DISCUSSION_CUE =
+  /\b(avoid|instead of|rather than|e\.g\.|for example|such as|anti-pattern|detect|flag|reject|block|refuse|guard against|attempt to|example of|do not use)\b/i;
 
-function isDiscussed(line: string, index: number): boolean {
-  if (DISCUSSION_CUE.test(line)) return true;
-  // Match wrapped in quotes or backticks nearby.
-  const before = line.slice(Math.max(0, index - 2), index);
-  return /["'`“”]/.test(before);
+function isDiscussed(line: string, _index: number): boolean {
+  return DISCUSSION_CUE.test(line);
 }
 
 type BlockContext = 'prose' | 'code' | 'example';
@@ -104,10 +107,17 @@ function blockContext(ctx: FileRuleContext, line: number): BlockContext {
   return isExampleBlock(range) ? 'example' : 'code';
 }
 
+/**
+ * @param skipExamples when true (low-signal rules documenting patterns), an
+ *   example-labeled fence is skipped entirely. When false (high-signal
+ *   injection rules), it is downgraded to low confidence instead of skipped, so
+ *   an attacker cannot hide an injection by labeling the fence "example".
+ */
 function findingsFor(
   ctx: FileRuleContext,
   patterns: RegExp[],
   detail: string,
+  skipExamples = true,
 ): RuleFinding[] {
   const out: RuleFinding[] = [];
   const seen = new Set<number>();
@@ -116,9 +126,9 @@ function findingsFor(
       if (seen.has(match.line)) continue;
       seen.add(match.line);
       const ctxKind = blockContext(ctx, match.line);
-      if (ctxKind === 'example') continue;
+      if (ctxKind === 'example' && skipExamples) continue;
       const finding: RuleFinding = { detail, line: match.line, snippet: match.text.trim() };
-      if (ctxKind === 'code' || isDiscussed(match.text, match.index)) finding.confidence = 'low';
+      if (ctxKind !== 'prose' || isDiscussed(match.text, match.index)) finding.confidence = 'low';
       out.push(finding);
     }
   }
@@ -150,20 +160,24 @@ export const nlReviewerTargeting: FileRule = {
   appliesTo: NL_KINDS,
   remediation: 'Skill instructions should never address a reviewer or attempt to override the host system prompt.',
   check: (ctx) => {
+    // High-signal injection rule: do not fully skip example-labeled fences
+    // (that would be an evasion), downgrade them instead.
     const out = findingsFor(
       ctx,
       [IGNORE_INSTRUCTIONS, ROLE_OVERRIDE],
       'Attempts to override prior/system instructions (prompt injection).',
+      false,
     );
     // Reviewer-targeting + "report safe" is the strongest signal: flag it critical.
     for (const match of scan(ctx, REVIEWER_TARGET)) {
       const ctxKind = blockContext(ctx, match.line);
-      if (ctxKind === 'example') continue;
       const nearby = ctx.parsed.normalized.lines
         .slice(Math.max(0, match.line - 2), match.line + 2)
         .join(' ');
       const critical = REPORT_SAFE.test(nearby);
-      const damped = ctxKind === 'code' || isDiscussed(match.text, match.index);
+      // A reviewer-manipulation attempt ("report this as safe") stays high even
+      // when quoted/fenced; only the weaker "addresses a reviewer" case damps.
+      const damped = !critical && (ctxKind !== 'prose' || isDiscussed(match.text, match.index));
       out.push({
         detail: critical
           ? 'Directs a security scanner/reviewer to report the skill as safe (attempted reviewer manipulation).'
@@ -196,16 +210,16 @@ export const nlExfiltration: FileRule = {
       const window = lines.slice(i, i + 2).join(' ').slice(0, MAX_SCAN_LINE * 2);
       if (EXFIL_VERB.test(window) && SECRET_NOUN.test(window) && EXTERNAL_DEST.test(window)) {
         const ctxKind = blockContext(ctx, i + 1);
-        if (ctxKind === 'example') continue;
         const finding: RuleFinding = {
           detail: 'Instruction combines sending/uploading, a secret, and an external destination.',
           line: i + 1,
           snippet: (lines[i] ?? '').trim(),
         };
-        // Exfil prose is the real signal; a match inside a code fence, or one
-        // that reads as documentation/quotation, is dropped to low confidence
-        // (which damps the verdict to CAUTION unless --strict).
-        if (ctxKind === 'code' || isDiscussed(window, 0)) finding.confidence = 'low';
+        // Exfil prose is the real signal; a match inside any code fence
+        // (including one labeled "example"), or one that reads as documentation,
+        // is dropped to low confidence (CAUTION unless --strict) rather than
+        // skipped, so a fake "example" wrapper cannot fully hide it.
+        if (ctxKind !== 'prose' || isDiscussed(window, 0)) finding.confidence = 'low';
         out.push(finding);
       }
     }
