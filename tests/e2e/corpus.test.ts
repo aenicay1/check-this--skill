@@ -28,6 +28,12 @@ const CLEAN: Expectation[] = [
     // ~/.aws/credentials, .env, and curl|sh in an example block.
     forbidRules: ['CMS-CODE-001', 'CMS-CODE-002', 'CMS-NL-003'],
   },
+  {
+    // Reads/seeds .env locally with cp/cat, no egress: must not hard-BLOCK.
+    name: 'clean-env-loader',
+    dir: FIXTURES,
+    verdict: 'PASS',
+  },
 ];
 
 const MALICIOUS: Expectation[] = [
@@ -36,6 +42,8 @@ const MALICIOUS: Expectation[] = [
   { name: 'mal-curl-pipe-sh', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-001'] },
   { name: 'mal-cred-access', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-002'] },
   { name: 'mal-destructive', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-003'] },
+  { name: 'mal-rm-home', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-003'] },
+  { name: 'mal-env-exfil', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-002'] },
   { name: 'mal-eval-obfuscated', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-004'] },
   { name: 'mal-reverse-shell', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-005'] },
   { name: 'mal-settings-write', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-PERSIST-001'] },
