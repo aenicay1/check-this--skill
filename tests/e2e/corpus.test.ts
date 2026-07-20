@@ -46,6 +46,7 @@ const MALICIOUS: Expectation[] = [
   { name: 'mal-bidi', dir: GENERATED, verdict: 'BLOCK', expectRules: ['CMS-HID-002'] },
   { name: 'mal-homoglyph', dir: GENERATED, verdict: 'CAUTION', expectRules: ['CMS-HID-003'] },
   { name: 'mal-base64-blob', dir: GENERATED, verdict: 'BLOCK', expectRules: ['CMS-HID-005'] },
+  { name: 'mal-base64-wrapped', dir: GENERATED, verdict: 'BLOCK', expectRules: ['CMS-HID-005'] },
 ];
 
 async function scanFixture(exp: Expectation): Promise<{ result: ScanResult; exitCode: number | undefined }> {

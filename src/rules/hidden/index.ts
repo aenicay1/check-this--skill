@@ -164,25 +164,50 @@ export const hidEncodedBlob: FileRule = {
   check: (ctx) => {
     const out: RuleFinding[] = [];
     const lines = ctx.parsed.lines;
+    const dangerousDecode = (decoded: string | undefined): boolean =>
+      decoded !== undefined &&
+      // Escalate only on executable content, not a bare URL: base64 data URIs
+      // for small SVG/HTML assets legitimately contain URLs.
+      /(\b(curl|wget)\b[^\n]*\|\s*(ba|z)?sh|\beval\s*\(|\bexec\s*\(|\/dev\/tcp\/|\bsubprocess\b|\bos\.system\b|\bimport\s+socket\b|\|\s*(ba|z)?sh\b)/i.test(decoded);
+
+    const pushRun = (run: ReturnType<typeof findEncodedRuns>[number], line: number) => {
+      if (shannonEntropy(run.text) < 4.0) return;
+      const decoded = tryDecodeToText(run);
+      const dangerous = dangerousDecode(decoded);
+      out.push({
+        detail: dangerous
+          ? `Encoded ${run.encoding} blob decodes to shell/URL content.`
+          : `Long high-entropy ${run.encoding} blob (${run.text.length} chars) hides its content from review.`,
+        line,
+        severity: dangerous ? 'high' : undefined,
+        snippet: `${run.text.slice(0, 60)}… (${run.text.length} chars)`,
+      });
+    };
+
+    // Single-line blobs.
     for (let i = 0; i < lines.length; i++) {
-      const line = lines[i] ?? '';
-      for (const run of findEncodedRuns(line)) {
-        if (shannonEntropy(run.text) < 4.0) continue;
-        const decoded = tryDecodeToText(run);
-        // Escalate only on executable content, not a bare URL: base64 data URIs
-        // for small SVG/HTML assets legitimately contain URLs.
-        const dangerous =
-          decoded !== undefined &&
-          /(\b(curl|wget)\b[^\n]*\|\s*(ba|z)?sh|\beval\s*\(|\bexec\s*\(|\/dev\/tcp\/|\bsubprocess\b|\bos\.system\b|\bimport\s+socket\b|\|\s*(ba|z)?sh\b)/i.test(decoded);
-        out.push({
-          detail: dangerous
-            ? `Encoded ${run.encoding} blob decodes to shell/URL content.`
-            : `Long high-entropy ${run.encoding} blob (${run.text.length} chars) hides its content from review.`,
-          line: i + 1,
-          severity: dangerous ? 'high' : undefined,
-          snippet: `${run.text.slice(0, 60)}… (${run.text.length} chars)`,
-        });
+      for (const run of findEncodedRuns(lines[i] ?? '')) pushRun(run, i + 1);
+    }
+
+    // Wrapped blobs: consecutive base64-only lines (e.g. standard 76-column
+    // wrapping) that no single-line scan would catch. Join and re-check.
+    const base64Line = /^[A-Za-z0-9+/]{40,}={0,2}$/;
+    let i = 0;
+    while (i < lines.length) {
+      if (!base64Line.test((lines[i] ?? '').trim())) {
+        i += 1;
+        continue;
       }
+      let j = i;
+      let joined = '';
+      while (j < lines.length && base64Line.test((lines[j] ?? '').trim())) {
+        joined += (lines[j] ?? '').trim();
+        j += 1;
+      }
+      if (j - i >= 2 && joined.length >= 200) {
+        for (const run of findEncodedRuns(joined)) pushRun(run, i + 1);
+      }
+      i = j;
     }
     return out;
   },

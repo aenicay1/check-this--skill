@@ -88,3 +88,15 @@ Added by the semantic review stage; always `medium` confidence except tamper.
 | -- | -------- | --------------- |
 | CMS-LLM-TAMPER | high | The skill diverted the reviewer (wrong integrity canary): an embedded prompt-injection attack. |
 | CMS-LLM-\<category\> | model-assigned | Injection, exfiltration, deception, persistence, or permission-mismatch the model identified, with verified evidence. |
+
+## Known limitations
+
+`check-my-skill` raises the cost of shipping a malicious skill and catches the common, careless, and accidental cases. It is a filter, not a proof of safety. Be aware of the following, by design:
+
+- **Deterministic rules are pattern-based and defeatable by deliberate obfuscation.** A determined attacker can split a command across lines, build a credential path or URL from variables, use a synonym a regex does not list, or otherwise stay just outside a pattern. The rules target the shapes real malicious and buggy skills actually take, not every theoretically-reachable encoding. The LLM review stage exists precisely to catch semantic attacks that patterns miss, and a human should still read anything a skill will run.
+- **Only bundled scripts are analyzed as code.** Code rules run on shell, Python, and JavaScript files. A payload that lives only in prose is instead covered by the natural-language rules (which flag "download and run" style instructions) and the LLM stage. Nothing in the bundle is ever executed, so behavior that only manifests at runtime (fetch-and-execute of a remote URL) is reported as a risk to review, not resolved.
+- **The dependency audit checks pinned versions against OSV.** Semver ranges are not queried (OSV needs an exact version), and lockfile formats other than `package-lock.json` are not yet parsed; unparsed manifests are reported as unchecked rather than silently passed.
+- **Coverage is bounded by hard caps** (file count, per-file and total bytes, directory depth, archive entries). When a cap is hit, the scan reports what it skipped rather than implying full coverage.
+- **The LLM stage is best-effort and non-deterministic.** It is never load-bearing for a rule-driven `BLOCK`, it can only add findings, and it is skipped cleanly when the `claude` binary is absent. A rules-only scan (`--no-llm`) is fully supported but blind to novel natural-language attacks.
+
+A `PASS` means "nothing this scanner recognizes as dangerous," not "guaranteed safe." Treat it as one strong signal among several.
