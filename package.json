@@ -23,8 +23,10 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && vitest run",
-    "prepublishOnly": "npm test"
+    "build:fixtures": "node tests/build-fixtures.ts",
+    "pretest": "npm run build && npm run build:fixtures",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && vitest run"
   },
   "dependencies": {
     "acorn": "^8.17.0",
