@@ -29,7 +29,7 @@ Applied to all text files.
 
 ## Bundled code (`CMS-CODE-*`)
 
-Applied to shell, Python, and JavaScript files. JavaScript uses AST analysis to tell literal from computed arguments.
+Applied to shell, Python, and JavaScript files. JavaScript uses AST analysis to tell literal from computed arguments. The near-zero-false-positive subset (CMS-CODE-001/002/003/005/007) is **also** run over commands written inside Markdown, both fenced code blocks and inline `` `code` `` spans, since that is where a skill puts the commands it tells the agent to run. Example-labeled fences are skipped, and in Markdown a credential path is only flagged when an actual access/movement verb is present (so documentation that merely names `id_rsa` does not fire). This makes the deterministic layer language-neutral: it catches an embedded `pipx install git+https://…` or `curl … | sh` even in a non-English skill with `--no-llm`.
 
 | ID | Severity | What it catches |
 | -- | -------- | --------------- |
@@ -94,7 +94,7 @@ Added by the semantic review stage; always `medium` confidence except tamper.
 `check-my-skill` raises the cost of shipping a malicious skill and catches the common, careless, and accidental cases. It is a filter, not a proof of safety. Be aware of the following, by design:
 
 - **Deterministic rules are pattern-based and defeatable by deliberate obfuscation.** A determined attacker can split a command across lines, build a credential path or URL from variables, use a synonym a regex does not list, or otherwise stay just outside a pattern. The rules target the shapes real malicious and buggy skills actually take, not every theoretically-reachable encoding. The LLM review stage exists precisely to catch semantic attacks that patterns miss, and a human should still read anything a skill will run.
-- **Only bundled scripts are analyzed as code.** Code rules run on shell, Python, and JavaScript files. A payload that lives only in prose is instead covered by the natural-language rules (which flag "download and run" style instructions) and the LLM stage. Nothing in the bundle is ever executed, so behavior that only manifests at runtime (fetch-and-execute of a remote URL) is reported as a risk to review, not resolved.
+- **Code analysis covers scripts and Markdown commands, but not arbitrary prose.** The code rules run on shell/Python/JavaScript files and on commands embedded in Markdown (fenced blocks and inline code). A risky behavior described only in free prose (no command form) is instead covered by the natural-language rules and the LLM stage. Nothing in the bundle is ever executed, so behavior that only manifests at runtime (fetch-and-execute of a remote URL) is reported as a risk to review, not resolved.
 - **The dependency audit checks pinned versions against OSV.** Semver ranges are not queried (OSV needs an exact version), and lockfile formats other than `package-lock.json` are not yet parsed; unparsed manifests are reported as unchecked rather than silently passed.
 - **Coverage is bounded by hard caps** (file count, per-file and total bytes, directory depth, archive entries). When a cap is hit, the scan reports what it skipped rather than implying full coverage.
 - **The LLM stage is best-effort and non-deterministic.** It is never load-bearing for a rule-driven `BLOCK`, it can only add findings, and it is skipped cleanly when the `claude` binary is absent. A rules-only scan (`--no-llm`) is fully supported but blind to novel natural-language attacks.

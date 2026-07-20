@@ -44,6 +44,9 @@ const MALICIOUS: Expectation[] = [
   { name: 'mal-destructive', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-003'] },
   { name: 'mal-rm-home', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-003'] },
   { name: 'mal-env-exfil', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-002'] },
+  // Dangerous commands embedded in markdown (a fenced curl|sh and an inline
+  // `pipx install git+...`) must be caught even though there is no script file.
+  { name: 'mal-md-command', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-001', 'CMS-CODE-007'] },
   { name: 'mal-eval-obfuscated', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-004'] },
   { name: 'mal-reverse-shell', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-CODE-005'] },
   { name: 'mal-settings-write', dir: FIXTURES, verdict: 'BLOCK', expectRules: ['CMS-PERSIST-001'] },
