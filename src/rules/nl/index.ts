@@ -36,8 +36,11 @@ const MAX_SCAN_LINE = 4000;
 // Verbs that mean "make the user aware". Deliberately excludes print/display/
 // output: those are things done FOR the user, so "do not send it; print it for
 // the user" is benign and must not match.
+// The negation must directly govern the concealment verb (same clause, close
+// together): "do not tell the user". This avoids matching two unrelated clauses
+// like "if they don't have one, tell the user where to get it".
 const ANTI_OVERSIGHT =
-  /\b(do not|don'?t|never)\b[^.]{0,40}\b(tell|inform|mention|show|notify|alert|reveal|disclose|surface|log|report to|warn|let .{0,15}\bknow)\b[^.]{0,25}\b(the )?(user|human|operator|person|them|anyone)\b/i;
+  /\b(do not|don'?t|never)\s+(ever\s+|explicitly\s+|actually\s+)?(tell|inform|mention|show|notify|alert|reveal|disclose|surface|log|report|warn|let)\b[^.;,]{0,25}\b(the )?(user|human|operator|person|them|anyone)\b/i;
 // Require the hidden thing to be an action/fact you performed, not a UI
 // element, and the audience to be a person (not "the logs"), so "hide the
 // spinner from the user" or "suppress output from the logs" do not match.
