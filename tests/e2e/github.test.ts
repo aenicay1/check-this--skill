@@ -68,6 +68,19 @@ describe('extractTarball hostile-archive defenses', () => {
     expect(skipped.some((s) => s.includes('traversal'))).toBe(true);
   });
 
+  it('has fully flushed every file when it returns (regression: async write race)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'cms-ext-'));
+    const big = 'x'.repeat(300_000);
+    const stream = makeTarball([
+      { name: 'repo-main/a.txt', content: 'a' },
+      { name: 'repo-main/big-last.txt', content: big },
+    ]);
+    await extractTarball(stream, dir);
+    // If writes were not awaited, this file would be short or missing.
+    const written = await readFile(path.join(dir, 'big-last.txt'), 'utf8');
+    expect(written.length).toBe(big.length);
+  });
+
   it('rejects symlink entries entirely', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'cms-ext-'));
     const stream = makeTarball([
