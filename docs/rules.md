@@ -1,0 +1,90 @@
+# Rule catalog
+
+Every deterministic rule has a stable id, a default severity, and a confidence level. Confidence gates the verdict: a lone low-confidence finding will not hard-`BLOCK` unless you pass `--strict`. The LLM stage adds `CMS-LLM-*` findings on top; it can never remove or downgrade a rule finding.
+
+## Natural-language instructions (`CMS-NL-*`)
+
+Applied to `SKILL.md` and reference markdown (frontmatter is excluded from prose scanning).
+
+| ID | Severity | What it catches |
+| -- | -------- | --------------- |
+| CMS-NL-001 | high | Instructions to hide activity from the user ("do not tell the user", "hide this from"). |
+| CMS-NL-002 | high (critical when it tells a reviewer to report safe) | Prompt injection: overriding prior/system instructions, or text addressed to a reviewer/scanner. |
+| CMS-NL-003 | critical | Exfiltration directive: a sentence combining a send/upload verb, a secret, and an external destination. |
+| CMS-NL-004 | high | Weakening permissions or bypassing safety prompts (co-occurrence of a config surface and a modify verb, or standalone bypass flags). |
+| CMS-NL-005 | medium | Instructions to download and run remote code. |
+
+## Hidden content (`CMS-HID-*`)
+
+Applied to all text files.
+
+| ID | Severity | What it catches |
+| -- | -------- | --------------- |
+| CMS-HID-001 | high | Invisible / zero-width characters hiding text. |
+| CMS-HID-002 | critical | Bidirectional control characters (Trojan Source). |
+| CMS-HID-003 | medium | Mixed-script homoglyphs (Latin word containing Cyrillic/Greek look-alikes). |
+| CMS-HID-004 | medium | HTML comments (invisible when rendered) containing instructions or URLs. |
+| CMS-HID-005 | medium (high if it decodes to shell/URL) | Long high-entropy base64/hex blob. |
+| CMS-HID-006 | low | Content styled invisible (display:none, font-size:0, white-on-white). |
+
+## Bundled code (`CMS-CODE-*`)
+
+Applied to shell, Python, and JavaScript files. JavaScript uses AST analysis to tell literal from computed arguments.
+
+| ID | Severity | What it catches |
+| -- | -------- | --------------- |
+| CMS-CODE-001 | critical | Pipe-to-shell (`curl ... \| sh`, `iwr ... \| iex`). |
+| CMS-CODE-002 | critical | Access to credential/secret files (`~/.ssh`, `~/.aws`, `.env`, keychain, `.npmrc`, `.kube`). |
+| CMS-CODE-003 | critical | Destructive commands (`rm -rf ~`, `dd of=/dev/...`, fork bomb). |
+| CMS-CODE-004 | high | Dynamic/obfuscated execution (`eval`/`exec`/`Function`/`child_process` with a computed argument, decode-then-run). |
+| CMS-CODE-005 | high | Reverse-shell signatures. |
+| CMS-CODE-006 | medium | Network exfil primitives (DNS exfil, raw TCP, paste/webhook hosts). |
+| CMS-CODE-007 | medium | Runtime fetch-and-execute. |
+| CMS-CODE-008 | low | Bulk environment-variable harvesting. |
+
+## Persistence and escalation (`CMS-PERSIST-*`)
+
+Applied to all text files. Each looks for a *write* to a sensitive target, not a mere mention.
+
+| ID | Severity | What it catches |
+| -- | -------- | --------------- |
+| CMS-PERSIST-001 | critical | Writing to `~/.claude/settings.json` or installing a hook. |
+| CMS-PERSIST-002 | high | Injecting an MCP server (`claude mcp add`, `.mcp.json`). |
+| CMS-PERSIST-003 | high | Tampering with agent instruction files (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`). |
+| CMS-PERSIST-004 | high | System persistence (cron, launchd, systemd, shell rc files). |
+
+## Frontmatter and permissions (`CMS-FM-*`)
+
+Applied to `SKILL.md`.
+
+| ID | Severity | What it catches |
+| -- | -------- | --------------- |
+| CMS-FM-001 | medium (high for skip-permission flags) | Broad or unscoped tool permissions (bare `Bash`, wildcards). |
+| CMS-FM-002 | low | Declared tools exceed a read-only/formatting stated purpose (deterministic seed the LLM can raise). |
+| CMS-FM-003 | medium (high for injection tokens) | Malformed/missing frontmatter, name/directory mismatch, or injection text in metadata. |
+
+## Dependencies (`CMS-DEP-*`)
+
+Applied to manifests (`package.json`, `package-lock.json`, `requirements*.txt`).
+
+| ID | Severity | What it catches |
+| -- | -------- | --------------- |
+| CMS-DEP-001 | from OSV CVSS | Known-vulnerable pinned dependency (OSV.dev). |
+| CMS-DEP-002 | high | Install/lifecycle script that runs network or shell code. |
+| CMS-DEP-003 | medium | Non-registry or unpinned dependency source (git URL, http tarball, local path). |
+
+## Whole-bundle (`CMS-BUNDLE-*`)
+
+| ID | Severity | What it catches |
+| -- | -------- | --------------- |
+| CMS-BUNDLE-001 | high (critical into a sensitive path) | Symlink whose target escapes the bundle. |
+| CMS-BUNDLE-002 | info | No `SKILL.md` present (may not be a skill). |
+
+## LLM review (`CMS-LLM-*`)
+
+Added by the semantic review stage; always `medium` confidence except tamper.
+
+| ID | Severity | What it catches |
+| -- | -------- | --------------- |
+| CMS-LLM-TAMPER | high | The skill diverted the reviewer (wrong integrity canary): an embedded prompt-injection attack. |
+| CMS-LLM-\<category\> | model-assigned | Injection, exfiltration, deception, persistence, or permission-mismatch the model identified, with verified evidence. |
